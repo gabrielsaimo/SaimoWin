@@ -10,8 +10,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod atualizacao;
+mod capas;
 mod catalogo;
 mod mpv;
+mod progresso;
 mod rede;
 mod telemetria;
 
@@ -54,6 +56,8 @@ enum Recado {
     Series(String, Vec<vod::Serie>),
     Episodios(String, Vec<vod::Episodio>),
     Acervo(Vec<vod::Achado>),
+    /// Uma capa achada no TMDB: só serve para redesenhar a lista.
+    Capa,
 }
 
 /// As três listas da tela.
@@ -115,6 +119,9 @@ struct App {
     carregando_vod: bool,
     /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
     acervo: Vec<vod::Achado>,
+    favoritos_vod: Vec<String>,
+    so_favoritos: bool,
+    ultimo_progresso: Instant,
     foco_vod: usize,
     tocando_vod: Option<TocandoVod>,
 }
@@ -210,6 +217,9 @@ impl App {
             episodios: Vec::new(),
             carregando_vod: false,
             acervo: Vec::new(),
+            favoritos_vod: ler_lista("favoritos-vod.txt"),
+            so_favoritos: false,
+            ultimo_progresso: Instant::now(),
             foco_vod: 0,
             tocando_vod: None,
         };
@@ -289,6 +299,7 @@ impl App {
         self.episodios.clear();
         self.foco_vod = 0;
         self.carregando_vod = true;
+        let liberado = self.liberado;
         for serie in [false, true] {
             let emissor = self.emissor.clone();
             let letra = letra.clone();
@@ -296,7 +307,15 @@ impl App {
                 let recado = if serie {
                     Recado::Series(letra.clone(), vod::series(&letra))
                 } else {
-                    Recado::Filmes(letra.clone(), vod::filmes(&letra))
+                    let mut lista = vod::filmes(&letra);
+                    // Os reservados só existem depois do código, como os canais.
+                    if liberado {
+                        lista.extend(vod::reservados(&letra));
+                        lista.sort_by(|a, b| {
+                            catalogo::chave_de_ordem(&a.titulo).cmp(&catalogo::chave_de_ordem(&b.titulo))
+                        });
+                    }
+                    Recado::Filmes(letra.clone(), lista)
                 };
                 let _ = emissor.send(recado);
             });
@@ -316,6 +335,8 @@ impl App {
     }
 
     fn tocar_vod(&mut self, titulo: String, urls: Vec<String>, fonte: usize, nova: bool) {
+        // Trocar de filme fecha a conta do anterior antes de perder a posição.
+        self.guardar_progresso(true);
         let Some(mpv) = self.mpv.as_ref() else { return };
         let Some(url) = urls.get(fonte).cloned() else {
             telemetria::caiu("vod", &titulo, urls.len());
@@ -337,6 +358,54 @@ impl App {
         });
         self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
         self.lista_aberta = false;
+    }
+
+    /// Grava onde o filme parou. `agora` força, em vez de esperar os 15 s.
+    fn guardar_progresso(&mut self, agora: bool) {
+        if !agora && self.ultimo_progresso.elapsed() < Duration::from_secs(15) {
+            return;
+        }
+        self.ultimo_progresso = Instant::now();
+        let (Some(filme), Some(mpv)) = (self.tocando_vod.as_ref(), self.mpv.as_ref()) else { return };
+        if !filme.confirmado {
+            return;
+        }
+        if let Some((posicao, duracao)) = mpv.posicao() {
+            progresso::salvar(&filme.titulo, posicao, duracao);
+        }
+    }
+
+    /// Volta ao ponto em que parou, quando há um.
+    fn retomar(&mut self) {
+        let (Some(filme), Some(mpv)) = (self.tocando_vod.as_ref(), self.mpv.as_ref()) else { return };
+        let Some(marca) = progresso::onde_parou(&filme.titulo) else { return };
+        mpv.ir_para(marca.posicao);
+        let minutos = (marca.posicao / 60.0).round() as i64;
+        self.aviso = Some((format!("continuando de {minutos} min"), Instant::now()));
+    }
+
+    fn favoritar_vod(&mut self, titulo: String) {
+        if let Some(pos) = self.favoritos_vod.iter().position(|f| *f == titulo) {
+            self.favoritos_vod.remove(pos);
+        } else {
+            self.favoritos_vod.push(titulo);
+        }
+        gravar_lista("favoritos-vod.txt", &self.favoritos_vod);
+    }
+
+    /// A capa do título: devolve o que já se sabe e manda procurar o resto.
+    fn capa(&mut self, titulo: &str, serie: bool) -> Option<egui::TextureHandle> {
+        match capas::conhecida(titulo, serie) {
+            Some(url) if url.is_empty() => None,
+            Some(url) => self.logo(&url),
+            None => {
+                let emissor = self.emissor.clone();
+                capas::procurar(titulo.to_string(), serie, move |_| {
+                    let _ = emissor.send(Recado::Capa);
+                });
+                None
+            }
+        }
     }
 
     fn proxima_fonte_vod(&mut self, motivo: &str) {
@@ -419,6 +488,7 @@ impl App {
                                     (t.titulo.clone(), t.fonte, t.desde.elapsed().as_millis());
                                 let url = t.urls.get(fonte).cloned().unwrap_or_default();
                                 telemetria::tocou("vod", &titulo, &url, fonte + 1, ms);
+                                self.retomar();
                             }
                         }
                     }
@@ -427,6 +497,10 @@ impl App {
                     mpv::Aviso::Fim => {
                         let acabou = self.tocando_vod.as_ref().map(|t| t.confirmado).unwrap_or(false);
                         if acabou {
+                            // Chegou ao fim: nada a retomar da próxima vez.
+                            if let Some(filme) = self.tocando_vod.as_ref() {
+                                progresso::esquecer(&filme.titulo);
+                            }
                             telemetria::parou();
                             self.tocando_vod = None;
                             self.lista_aberta = true;
@@ -475,10 +549,13 @@ impl App {
         if self.tocando.is_some() || self.tocando_vod.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
+        self.guardar_progresso(false);
     }
 
     fn cuidar_dos_recados(&mut self, ctx: &egui::Context) {
+        let mut chegou_algo = false;
         while let Ok(recado) = self.recados.try_recv() {
+            chegou_algo = true;
             match recado {
                 Recado::Catalogo(lista) => self.trocar_lista(lista, false),
                 Recado::Restritos(lista) => self.trocar_lista(lista, true),
@@ -490,6 +567,7 @@ impl App {
                 Recado::Guia => {}
                 Recado::Gavetas(lista) => self.gavetas = lista,
                 Recado::Acervo(lista) => self.acervo = lista,
+                Recado::Capa => {}
                 Recado::Filmes(letra, lista) => {
                     if letra == self.letra {
                         self.filmes = lista;
@@ -509,6 +587,11 @@ impl App {
                     }
                 }
             }
+        }
+        // Sem isto, a lista só redesenharia no próximo movimento do mouse — e a
+        // capa que acabou de chegar ficaria invisível até lá.
+        if chegou_algo || !self.pedidos_de_logo.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
         if self.ultima_checagem.elapsed() > Duration::from_secs(3600) {
             self.ultima_checagem = Instant::now();
@@ -571,6 +654,9 @@ impl App {
                 let aviso = if self.liberado { "lista completa liberada" } else { "lista restrita escondida" };
                 self.aviso = Some((aviso.into(), Instant::now()));
                 self.reordenar();
+                let letra = self.letra.clone();
+                self.letra.clear();
+                self.abrir_letra(letra);
             } else if let Ok(numero) = digitado.parse::<usize>() {
                 if numero >= 1 && numero <= self.canais.len() {
                     self.tocar(numero - 1, 0, true);
@@ -678,11 +764,23 @@ impl App {
                 }
                 egui::Key::Plus | egui::Key::Equals => self.mudar_volume(5),
                 egui::Key::Minus => self.mudar_volume(-5),
-                egui::Key::L => {
-                    if let Some(canal) = self.canais.get(self.foco).map(|c| c.nome.clone()) {
-                        self.favoritar(canal);
+                egui::Key::L => match self.aba {
+                    Aba::Canais => {
+                        if let Some(canal) = self.canais.get(self.foco).map(|c| c.nome.clone()) {
+                            self.favoritar(canal);
+                        }
                     }
-                }
+                    Aba::Filmes => {
+                        if let Some(filme) = self.filmes.get(self.foco_vod).map(|f| f.titulo.clone()) {
+                            self.favoritar_vod(filme);
+                        }
+                    }
+                    Aba::Series => {
+                        if let Some(serie) = self.series.get(self.foco_vod).map(|s| s.titulo.clone()) {
+                            self.favoritar_vod(serie);
+                        }
+                    }
+                },
                 _ => {}
             }
         }
@@ -754,13 +852,21 @@ fn caminho_do_mpv() -> std::path::PathBuf {
 }
 
 fn ler_favoritos() -> Vec<String> {
-    std::fs::read_to_string(catalogo::pasta().join("favoritos.txt"))
+    ler_lista("favoritos.txt")
+}
+
+fn gravar_favoritos(favoritos: &[String]) {
+    gravar_lista("favoritos.txt", favoritos);
+}
+
+fn ler_lista(nome: &str) -> Vec<String> {
+    std::fs::read_to_string(catalogo::pasta().join(nome))
         .map(|t| t.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
         .unwrap_or_default()
 }
 
-fn gravar_favoritos(favoritos: &[String]) {
-    let _ = std::fs::write(catalogo::pasta().join("favoritos.txt"), favoritos.join("\n"));
+fn gravar_lista(nome: &str, itens: &[String]) {
+    let _ = std::fs::write(catalogo::pasta().join(nome), itens.join("\n"));
 }
 
 impl eframe::App for App {
@@ -775,9 +881,16 @@ impl eframe::App for App {
         self.baixar_logos_pendentes();
 
         tela::desenhar(self, ctx);
+
+        // Capa e logo pedidos durante o desenho só chegam no quadro seguinte:
+        // sem este pedido de redesenho, a lista ficaria parada até alguém mexer.
+        if !self.pedidos_de_logo.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.guardar_progresso(true);
         telemetria::fechando();
     }
 }

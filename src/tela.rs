@@ -4,7 +4,7 @@
 //! OpenGL antes de qualquer widget, então a interface fica sempre por cima da
 //! imagem sem precisar de uma segunda janela.
 
-use crate::{atualizacao, catalogo, epg, vod, Aba, App};
+use crate::{atualizacao, catalogo, epg, progresso, vod, Aba, App};
 use eframe::egui;
 use eframe::glow::HasContext;
 use std::sync::Arc;
@@ -141,18 +141,19 @@ fn lista(app: &mut App, ctx: &egui::Context) {
             let mut favoritar: Option<String> = None;
             let mut secao_atual = String::new();
 
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for indice in visiveis {
+            let alto = 54.0;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+                ui,
+                alto,
+                visiveis.len(),
+                |ui, faixa| {
+                for indice in visiveis[faixa.start..faixa.end.min(visiveis.len())].to_vec() {
                     let (nome, secao, logo, fontes) = {
                         let canal = &app.canais[indice];
                         (canal.nome.clone(), canal.secao().to_string(), canal.logo.clone(), canal.fontes.len())
                     };
-                    if secao != secao_atual {
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new(secao.to_uppercase()).size(11.0).color(ROXO).strong());
-                        ui.add_space(2.0);
-                        secao_atual = secao;
-                    }
+                    let abre_secao = secao != secao_atual;
+                    secao_atual = secao.clone();
                     let favorito = app.favoritos.iter().any(|f| *f == nome);
                     let textura = logo.as_ref().and_then(|url| app.logo(url));
                     let no_ar = epg::agora_e_depois(&nome).map(|(atual, _)| atual.titulo);
@@ -166,6 +167,7 @@ fn lista(app: &mut App, ctx: &egui::Context) {
                         Some(indice) == tocando,
                         indice == foco,
                         no_ar.as_deref(),
+                        if abre_secao { Some(secao.as_str()) } else { None },
                     );
                     if resposta.clicked() {
                         clicado = Some(indice);
@@ -177,7 +179,8 @@ fn lista(app: &mut App, ctx: &egui::Context) {
                         resposta.scroll_to_me(Some(egui::Align::Center));
                     }
                 }
-            });
+            },
+            );
 
             if let Some(canal) = favoritar {
                 app.favoritar(canal);
@@ -210,8 +213,9 @@ fn linha_do_canal(
     tocando: bool,
     focado: bool,
     no_ar: Option<&str>,
+    secao: Option<&str>,
 ) -> egui::Response {
-    let altura = if no_ar.is_some() { 54.0 } else { 46.0 };
+    let altura = 54.0;
     let (rect, resposta) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), altura), egui::Sense::click());
     let pintor = ui.painter();
@@ -227,6 +231,19 @@ fn linha_do_canal(
     }
     if focado {
         pintor.rect_stroke(rect, 8.0, egui::Stroke::new(1.5, ROXO));
+    }
+
+    if let Some(secao) = secao {
+        // A seção vira etiqueta na própria linha: com altura fixa (que é o que
+        // permite desenhar só as linhas visíveis) não há espaço para um título
+        // separado no meio da lista.
+        pintor.text(
+            egui::pos2(rect.right() - 10.0, rect.top() + 7.0),
+            egui::Align2::RIGHT_TOP,
+            secao.to_uppercase(),
+            egui::FontId::proportional(9.5),
+            ROXO,
+        );
     }
 
     let mut x = rect.left() + 10.0;
@@ -465,7 +482,46 @@ fn acervo(app: &mut App, ui: &mut egui::Ui) {
         app.abrir_letra(letra);
         return;
     }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let marcados = app.favoritos_vod.len();
+        if ui
+            .selectable_label(app.so_favoritos, format!("★ favoritos ({marcados})"))
+            .clicked()
+        {
+            app.so_favoritos = !app.so_favoritos;
+        }
+        if app.liberado {
+            ui.label(egui::RichText::new("lista completa").size(11.0).color(ROSA));
+        }
+    });
     ui.add_space(6.0);
+
+    // Continuar de onde parou: só na lista de filmes e sem busca em cima.
+    if app.aba == Aba::Filmes && app.busca.trim().is_empty() && !app.so_favoritos {
+        let pendentes = progresso::pendentes();
+        if !pendentes.is_empty() {
+            ui.label(egui::RichText::new("CONTINUAR ASSISTINDO").size(11.0).color(ROXO).strong());
+            let mut retomar: Option<String> = None;
+            let mut esquecer: Option<String> = None;
+            for (titulo, marca) in pendentes.iter().take(6) {
+                let resposta = item_do_acervo(ui, titulo, &progresso::falta(marca), false);
+                if resposta.clicked() {
+                    retomar = Some(titulo.clone());
+                }
+                if resposta.secondary_clicked() {
+                    esquecer = Some(titulo.clone());
+                }
+            }
+            if let Some(titulo) = esquecer {
+                progresso::esquecer(&titulo);
+            }
+            if let Some(titulo) = retomar {
+                app.busca = titulo.split(" · ").next().unwrap_or(&titulo).to_string();
+            }
+            ui.add_space(8.0);
+        }
+    }
 
     if let Some(serie) = app.serie_aberta.clone() {
         episodios_da_serie(app, ui, &serie);
@@ -481,7 +537,12 @@ fn acervo(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let busca = catalogo::chave_de_ordem(app.busca.trim());
-    let combina = |titulo: &str| busca.is_empty() || catalogo::chave_de_ordem(titulo).contains(&busca);
+    let favoritos = app.favoritos_vod.clone();
+    let so_favoritos = app.so_favoritos;
+    let combina = |titulo: &str| {
+        (!so_favoritos || favoritos.iter().any(|f| f == titulo))
+            && (busca.is_empty() || catalogo::chave_de_ordem(titulo).contains(&busca))
+    };
 
     // Com três letras digitadas a procura passa a valer no acervo inteiro, e
     // não só na letra aberta — trinta mil títulos, quase todos fora dela.
@@ -532,42 +593,78 @@ fn acervo(app: &mut App, ui: &mut egui::Ui) {
     let mut tocar: Option<(String, Vec<String>)> = None;
     let mut abrir: Option<vod::Serie> = None;
 
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        if app.aba == Aba::Filmes {
-            let lista: Vec<&vod::Filme> = app.filmes.iter().filter(|f| combina(&f.titulo)).collect();
-            if lista.is_empty() {
-                ui.label(egui::RichText::new("nada nesta letra").weak());
-            }
-            for (posicao, filme) in lista.iter().enumerate() {
-                let versoes = filme
-                    .versoes
-                    .iter()
-                    .map(|(v, urls)| format!("{v} ({})", urls.len()))
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                if item_do_acervo(ui, &filme.titulo, &versoes, posicao == app.foco_vod).clicked() {
-                    app.foco_vod = posicao;
-                    tocar = Some((filme.titulo.clone(), filme.versoes[0].1.clone()));
-                }
-            }
-        } else {
-            let lista: Vec<&vod::Serie> = app.series.iter().filter(|s| combina(&s.titulo)).collect();
-            if lista.is_empty() {
-                ui.label(egui::RichText::new("nada nesta letra").weak());
-            }
-            for (posicao, serie) in lista.iter().enumerate() {
-                let detalhe = format!(
-                    "{}{} episódios",
-                    if serie.ano.is_empty() { String::new() } else { format!("{} · ", serie.ano) },
-                    serie.episodios
-                );
-                if item_do_acervo(ui, &serie.titulo, &detalhe, posicao == app.foco_vod).clicked() {
-                    app.foco_vod = posicao;
-                    abrir = Some((*serie).clone());
-                }
-            }
+    // show_rows, e não show: a letra "A" tem 2.672 filmes, e desenhar todos
+    // significaria pedir 2.672 capas ao TMDB de uma vez.
+    let altura = 64.0;
+    if app.aba == Aba::Filmes {
+        let lista: Vec<vod::Filme> =
+            app.filmes.iter().filter(|f| combina(&f.titulo)).cloned().collect();
+        if lista.is_empty() {
+            ui.label(egui::RichText::new("nada nesta letra").weak());
         }
-    });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+            ui,
+            altura,
+            lista.len(),
+            |ui, faixa| {
+                for posicao in faixa {
+                    let filme = &lista[posicao];
+                    let versoes = filme
+                        .versoes
+                        .iter()
+                        .map(|(v, urls)| format!("{v} ({})", urls.len()))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    let titulo = filme.titulo.clone();
+                    let urls = filme.versoes[0].1.clone();
+                    let favorito = app.favoritos_vod.iter().any(|f| *f == titulo);
+                    let capa = app.capa(&titulo, false);
+                    let resposta =
+                        item_com_capa(ui, &titulo, &versoes, capa, favorito, posicao == app.foco_vod);
+                    if resposta.clicked() {
+                        app.foco_vod = posicao;
+                        tocar = Some((titulo.clone(), urls));
+                    }
+                    if resposta.secondary_clicked() {
+                        app.favoritar_vod(titulo);
+                    }
+                }
+            },
+        );
+    } else {
+        let lista: Vec<vod::Serie> =
+            app.series.iter().filter(|s| combina(&s.titulo)).cloned().collect();
+        if lista.is_empty() {
+            ui.label(egui::RichText::new("nada nesta letra").weak());
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+            ui,
+            altura,
+            lista.len(),
+            |ui, faixa| {
+                for posicao in faixa {
+                    let serie = &lista[posicao];
+                    let detalhe = format!(
+                        "{}{} episódios",
+                        if serie.ano.is_empty() { String::new() } else { format!("{} · ", serie.ano) },
+                        serie.episodios
+                    );
+                    let titulo = serie.titulo.clone();
+                    let favorito = app.favoritos_vod.iter().any(|f| *f == titulo);
+                    let capa = app.capa(&titulo, true);
+                    let resposta =
+                        item_com_capa(ui, &titulo, &detalhe, capa, favorito, posicao == app.foco_vod);
+                    if resposta.clicked() {
+                        app.foco_vod = posicao;
+                        abrir = Some(serie.clone());
+                    }
+                    if resposta.secondary_clicked() {
+                        app.favoritar_vod(titulo);
+                    }
+                }
+            },
+        );
+    }
 
     if let Some((titulo, urls)) = tocar {
         app.tocar_vod(titulo, urls, 0, true);
@@ -609,7 +706,12 @@ fn episodios_da_serie(app: &mut App, ui: &mut egui::Ui, serie: &vod::Serie) {
                 );
             }
             let nome = format!("T{} E{}", episodio.temporada, episodio.numero);
-            if item_do_acervo(ui, &nome, &episodio.versao, posicao == app.foco_vod).clicked() {
+            let marca = progresso::onde_parou(&format!("{} · {nome}", serie.titulo));
+            let detalhe = match &marca {
+                Some(m) => progresso::falta(m),
+                None => episodio.versao.clone(),
+            };
+            if item_do_acervo(ui, &nome, &detalhe, posicao == app.foco_vod).clicked() {
                 tocar = Some((
                     format!("{} · {nome}", serie.titulo),
                     episodio.urls.clone(),
@@ -733,4 +835,71 @@ fn guia(app: &mut App, ctx: &egui::Context) {
                 }
             });
         });
+}
+
+/// Linha do acervo com capa, como na grade dos outros aplicativos.
+fn item_com_capa(
+    ui: &mut egui::Ui,
+    titulo: &str,
+    detalhe: &str,
+    capa: Option<egui::TextureHandle>,
+    favorito: bool,
+    focado: bool,
+) -> egui::Response {
+    let (rect, resposta) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 64.0), egui::Sense::click());
+    let pintor = ui.painter();
+    if focado || resposta.hovered() {
+        let cor = if focado {
+            egui::Color32::from_rgba_unmultiplied(139, 92, 246, 45)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+        };
+        pintor.rect_filled(rect, 8.0, cor);
+    }
+
+    let quadro = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 8.0, rect.top() + 6.0),
+        egui::vec2(36.0, 52.0),
+    );
+    match capa {
+        Some(textura) => {
+            egui::Image::new(&textura)
+                .maintain_aspect_ratio(true)
+                .fit_to_exact_size(quadro.size())
+                .rounding(4.0)
+                .paint_at(ui, quadro);
+        }
+        None => {
+            pintor.rect_filled(quadro, 4.0, egui::Color32::from_gray(28));
+        }
+    }
+
+    let x = quadro.right() + 10.0;
+    pintor.text(
+        egui::pos2(x, rect.center().y - 8.0),
+        egui::Align2::LEFT_CENTER,
+        titulo,
+        egui::FontId::proportional(14.0),
+        egui::Color32::from_gray(232),
+    );
+    if !detalhe.is_empty() {
+        pintor.text(
+            egui::pos2(x, rect.center().y + 10.0),
+            egui::Align2::LEFT_CENTER,
+            detalhe,
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_gray(125),
+        );
+    }
+    if favorito {
+        pintor.text(
+            egui::pos2(rect.right() - 10.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            "★",
+            egui::FontId::proportional(14.0),
+            ROSA,
+        );
+    }
+    resposta
 }

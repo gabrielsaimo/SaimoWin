@@ -131,7 +131,16 @@ fn arquivo(nome: &str) -> Option<String> {
 }
 
 pub fn filmes(letra: &str) -> Vec<Filme> {
-    let Some(texto) = arquivo(&format!("filmes-{}.txt", gaveta_do_arquivo(letra))) else {
+    ler_filmes(letra, "filmes")
+}
+
+/// Os títulos que só aparecem depois do código, no mesmo formato dos filmes.
+pub fn reservados(letra: &str) -> Vec<Filme> {
+    ler_filmes(letra, "reservado")
+}
+
+fn ler_filmes(letra: &str, prefixo: &str) -> Vec<Filme> {
+    let Some(texto) = arquivo(&format!("{prefixo}-{}.txt", gaveta_do_arquivo(letra))) else {
         return Vec::new();
     };
     texto

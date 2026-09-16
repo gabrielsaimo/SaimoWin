@@ -288,6 +288,21 @@ impl Mpv {
         self.comando(&["loadfile", url, "replace"]);
     }
 
+    /// Pula para um ponto do arquivo (em segundos).
+    pub fn ir_para(&self, segundos: f64) {
+        self.comando(&["seek", &format!("{segundos:.0}"), "absolute"]);
+    }
+
+    /// Posição e duração do que está tocando, quando o mpv já sabe.
+    pub fn posicao(&self) -> Option<(f64, f64)> {
+        let posicao = self.ler("time-pos")?.parse::<f64>().ok()?;
+        let duracao = self.ler("duration")?.parse::<f64>().ok()?;
+        if duracao <= 0.0 {
+            return None;
+        }
+        Some((posicao, duracao))
+    }
+
     pub fn parar(&self) {
         self.comando(&["stop"]);
     }

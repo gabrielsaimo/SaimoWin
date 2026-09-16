@@ -41,8 +41,9 @@ O guia sai das mesmas fontes dos outros aplicativos: meuguia.tv para a TV aberta
 e os canais grandes, o guia da própria Pluto TV casado pelo id que está no link
 do canal, e dois feeds XMLTV para o resto. Fica guardado por seis horas.
 
-Filmes e séries vêm do acervo publicado em `vod/`, fatiado por letra.
+Filmes e séries vêm do acervo publicado em `vod/`, fatiado por letra, com capa
+do TMDB (a mesma busca pontuada do TV Box), favoritos, "continuar de onde parou"
+e os títulos reservados, que aparecem junto com os canais restritos depois do
+código.
 
-## O que ainda não tem
-
-Capas dos filmes e continuar de onde parou.
+A capa é procurada só para as linhas visíveis: a letra "A" tem 2.672 filmes.

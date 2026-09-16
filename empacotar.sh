@@ -35,14 +35,16 @@ Como usar
 2. Abra "Saimo TV.exe". Os dois arquivos precisam ficar juntos na mesma pasta.
 
 O que tem
-  Canais ao vivo, com guia de programação, e o acervo de filmes e séries.
+  Canais ao vivo com guia de programação, e o acervo de filmes e séries com
+  capa, favoritos e "continuar de onde parou".
 
 Teclas
   setas       andam na lista          Enter     assiste
   Tab         muda de lista           G         guia do canal
   Esc         mostra/esconde a lista  seta →    troca a fonte
   F ou F11    tela cheia              Espaço    pausa
-  L           favorita                M         sem som
+  L           favorita (canal/filme)  M         sem som
+  botão direito             favorita na lista do acervo
   + e -       volume                  números   vão direto ao canal
 
 O aplicativo avisa quando sai versão nova e abre o download no navegador.
