@@ -1,0 +1,19 @@
+[package]
+name = "saimo-tv"
+version = "1.5.9"
+edition = "2021"
+description = "Saimo TV para Windows"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+egui = "0.29"
+ureq = { version = "2", default-features = false, features = ["tls", "gzip", "json"] }
+serde_json = "1"
+libloading = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

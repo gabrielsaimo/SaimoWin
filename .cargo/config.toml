@@ -1,0 +1,4 @@
+# Compilar do Mac para Windows: o linker é o do mingw-w64 (brew install mingw-w64).
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
