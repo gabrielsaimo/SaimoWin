@@ -183,7 +183,7 @@ fn evento(tipo: &str, kind: Option<&str>, titulo: Option<&str>, url: Option<&str
 
 /// `nova` é falso quando é só a próxima fonte do mesmo canal depois de uma
 /// falha: aí não conta como mais uma abertura.
-pub fn comecou(titulo: &str, url: &str, fonte: usize, nova: bool) {
+pub fn comecou(kind: &str, titulo: &str, url: &str, fonte: usize, nova: bool) {
     // O que fecha a conta do canal anterior é decidido com o cadeado na mão,
     // mas a batida só sai depois de soltá-lo: `bater` tranca o mesmo cadeado.
     let fechar_conta = {
@@ -206,26 +206,26 @@ pub fn comecou(titulo: &str, url: &str, fonte: usize, nova: bool) {
             estado.contando_desde = Instant::now();
         }
         estado.tocando = Some(Tocando {
-            kind: "live".into(),
+            kind: kind.to_string(),
             titulo: titulo.to_string(),
             host: host(url),
         });
     }
     if nova {
-        evento("play_start", Some("live"), Some(titulo), Some(url), Some(fonte), None);
+        evento("play_start", Some(kind), Some(titulo), Some(url), Some(fonte), None);
     }
 }
 
-pub fn tocou(titulo: &str, url: &str, fonte: usize, ms: u128) {
-    evento("play_ok", Some("live"), Some(titulo), Some(url), Some(fonte), Some(format!("{ms} ms")));
+pub fn tocou(kind: &str, titulo: &str, url: &str, fonte: usize, ms: u128) {
+    evento("play_ok", Some(kind), Some(titulo), Some(url), Some(fonte), Some(format!("{ms} ms")));
 }
 
-pub fn falhou(titulo: &str, url: &str, fonte: usize, detalhe: &str) {
-    evento("source_fail", Some("live"), Some(titulo), Some(url), Some(fonte), Some(detalhe.into()));
+pub fn falhou(kind: &str, titulo: &str, url: &str, fonte: usize, detalhe: &str) {
+    evento("source_fail", Some(kind), Some(titulo), Some(url), Some(fonte), Some(detalhe.into()));
 }
 
-pub fn caiu(titulo: &str, fontes: usize) {
-    evento("channel_down", Some("live"), Some(titulo), None, None,
+pub fn caiu(kind: &str, titulo: &str, fontes: usize) {
+    evento("channel_down", Some(kind), Some(titulo), None, None,
            Some(format!("nenhuma das {fontes} fonte(s) abriu")));
 }
 

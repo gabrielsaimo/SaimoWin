@@ -48,6 +48,29 @@ enum Recado {
     Restritos(Vec<Canal>),
     Logo(String, egui::ColorImage),
     Atualizacao(atualizacao::Versao),
+    Guia,
+    Gavetas(Vec<vod::Gaveta>),
+    Filmes(String, Vec<vod::Filme>),
+    Series(String, Vec<vod::Serie>),
+    Episodios(String, Vec<vod::Episodio>),
+    Acervo(Vec<vod::Achado>),
+}
+
+/// As três listas da tela.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Aba {
+    Canais,
+    Filmes,
+    Series,
+}
+
+/// O que está tocando quando não é canal: filme ou episódio.
+pub struct TocandoVod {
+    pub titulo: String,
+    pub urls: Vec<String>,
+    pub fonte: usize,
+    pub desde: Instant,
+    pub confirmado: bool,
 }
 
 struct Tocando {
@@ -81,6 +104,19 @@ struct App {
     nova_versao: Option<atualizacao::Versao>,
     ultima_checagem: Instant,
     aviso: Option<(String, Instant)>,
+    aba: Aba,
+    guia_aberto: bool,
+    gavetas: Vec<vod::Gaveta>,
+    letra: String,
+    filmes: Vec<vod::Filme>,
+    series: Vec<vod::Serie>,
+    serie_aberta: Option<vod::Serie>,
+    episodios: Vec<vod::Episodio>,
+    carregando_vod: bool,
+    /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
+    acervo: Vec<vod::Achado>,
+    foco_vod: usize,
+    tocando_vod: Option<TocandoVod>,
 }
 
 impl App {
@@ -122,6 +158,23 @@ impl App {
                 }
             });
         }
+        {
+            // O índice do acervo é pequeno e dá as bases dos endereços; sem ele
+            // nenhum filme abre.
+            let emissor = emissor.clone();
+            std::thread::spawn(move || {
+                let gavetas = vod::indice();
+                if !gavetas.is_empty() {
+                    let _ = emissor.send(Recado::Gavetas(gavetas));
+                }
+                // O índice de busca são uns 800 KB para trinta mil títulos:
+                // procurar no acervo inteiro sem baixar o acervo.
+                let acervo = vod::busca();
+                if !acervo.is_empty() {
+                    let _ = emissor.send(Recado::Acervo(acervo));
+                }
+            });
+        }
 
         let mut app = App {
             mpv,
@@ -147,6 +200,18 @@ impl App {
             nova_versao: None,
             ultima_checagem: Instant::now(),
             aviso: None,
+            aba: Aba::Canais,
+            guia_aberto: false,
+            gavetas: Vec::new(),
+            letra: "A".into(),
+            filmes: Vec::new(),
+            series: Vec::new(),
+            serie_aberta: None,
+            episodios: Vec::new(),
+            carregando_vod: false,
+            acervo: Vec::new(),
+            foco_vod: 0,
+            tocando_vod: None,
         };
         app.reordenar();
         app
@@ -189,6 +254,15 @@ impl App {
         self.foco = self.foco.min(self.canais.len().saturating_sub(1));
     }
 
+    /// Manda montar o guia com a lista que está na tela.
+    fn pedir_guia(&self) {
+        let canais = self.canais.clone();
+        let emissor = self.emissor.clone();
+        epg::carregar(canais, move || {
+            let _ = emissor.send(Recado::Guia);
+        });
+    }
+
     fn trocar_lista(&mut self, base: Vec<Canal>, restrita: bool) {
         if restrita {
             self.restritos = base;
@@ -198,13 +272,96 @@ impl App {
             self.canais = base;
         }
         self.reordenar();
+        self.pedir_guia();
+    }
+
+    // MARK: - Filmes e séries
+
+    /// Troca a letra do acervo e busca as duas listas dela.
+    fn abrir_letra(&mut self, letra: String) {
+        if self.letra == letra && !self.filmes.is_empty() {
+            return;
+        }
+        self.letra = letra.clone();
+        self.filmes.clear();
+        self.series.clear();
+        self.serie_aberta = None;
+        self.episodios.clear();
+        self.foco_vod = 0;
+        self.carregando_vod = true;
+        for serie in [false, true] {
+            let emissor = self.emissor.clone();
+            let letra = letra.clone();
+            std::thread::spawn(move || {
+                let recado = if serie {
+                    Recado::Series(letra.clone(), vod::series(&letra))
+                } else {
+                    Recado::Filmes(letra.clone(), vod::filmes(&letra))
+                };
+                let _ = emissor.send(recado);
+            });
+        }
+    }
+
+    fn abrir_serie(&mut self, serie: vod::Serie) {
+        self.serie_aberta = Some(serie.clone());
+        self.episodios.clear();
+        self.carregando_vod = true;
+        let emissor = self.emissor.clone();
+        let letra = self.letra.clone();
+        std::thread::spawn(move || {
+            let lista = vod::episodios(&letra, &serie);
+            let _ = emissor.send(Recado::Episodios(serie.titulo.clone(), lista));
+        });
+    }
+
+    fn tocar_vod(&mut self, titulo: String, urls: Vec<String>, fonte: usize, nova: bool) {
+        let Some(mpv) = self.mpv.as_ref() else { return };
+        let Some(url) = urls.get(fonte).cloned() else {
+            telemetria::caiu("vod", &titulo, urls.len());
+            self.aviso = Some((format!("{titulo}: nenhuma fonte abriu"), Instant::now()));
+            self.tocando_vod = None;
+            return;
+        };
+        mpv.tocar(&url, None, None);
+        mpv.pausa(false);
+        self.pausado = false;
+        self.tocando = None;
+        telemetria::comecou("vod", &titulo, &url, fonte + 1, nova);
+        self.tocando_vod = Some(TocandoVod {
+            titulo,
+            urls,
+            fonte,
+            desde: Instant::now(),
+            confirmado: false,
+        });
+        self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
+        self.lista_aberta = false;
+    }
+
+    fn proxima_fonte_vod(&mut self, motivo: &str) {
+        let Some(t) = self.tocando_vod.as_ref() else { return };
+        let (titulo, fonte, urls) = (t.titulo.clone(), t.fonte, t.urls.clone());
+        telemetria::falhou("vod", &titulo, urls.get(fonte).map(String::as_str).unwrap_or(""), fonte + 1, motivo);
+        if fonte + 1 >= urls.len() {
+            telemetria::caiu("vod", &titulo, urls.len());
+            telemetria::parou();
+            self.aviso = Some((format!("{titulo}: nenhuma das {} fontes abriu", urls.len()), Instant::now()));
+            self.tocando_vod = None;
+            if let Some(mpv) = self.mpv.as_ref() {
+                mpv.parar();
+            }
+            return;
+        }
+        self.aviso = Some((format!("{titulo}: trocando para a fonte {}", fonte + 2), Instant::now()));
+        self.tocar_vod(titulo, urls, fonte + 1, false);
     }
 
     fn tocar(&mut self, canal: usize, fonte: usize, nova: bool) {
         let Some(mpv) = self.mpv.as_ref() else { return };
         let Some(c) = self.canais.get(canal) else { return };
         let Some(f) = c.fontes.get(fonte) else {
-            telemetria::caiu(&c.nome, c.fontes.len());
+            telemetria::caiu("live", &c.nome, c.fontes.len());
             self.aviso = Some((format!("{}: nenhuma fonte abriu", c.nome), Instant::now()));
             self.tocando = None;
             return;
@@ -212,7 +369,7 @@ impl App {
         mpv.tocar(&f.url, f.referer.as_deref(), f.agente.as_deref());
         mpv.pausa(false);
         self.pausado = false;
-        telemetria::comecou(&c.nome, &f.url, fonte + 1, nova);
+        telemetria::comecou("live", &c.nome, &f.url, fonte + 1, nova);
         self.tocando = Some(Tocando { canal, fonte, desde: Instant::now(), confirmado: false });
         self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
     }
@@ -224,9 +381,9 @@ impl App {
             let Some(c) = self.canais.get(canal) else { return };
             (c.nome.clone(), c.fontes.get(fonte).map(|f| f.url.clone()).unwrap_or_default(), c.fontes.len())
         };
-        telemetria::falhou(&nome, &url, fonte + 1, motivo);
+        telemetria::falhou("live", &nome, &url, fonte + 1, motivo);
         if fonte + 1 >= total {
-            telemetria::caiu(&nome, total);
+            telemetria::caiu("live", &nome, total);
             telemetria::parou();
             self.aviso = Some((format!("{nome}: nenhuma das {total} fontes abriu"), Instant::now()));
             self.tocando = None;
@@ -252,6 +409,34 @@ impl App {
     fn cuidar_do_mpv(&mut self, ctx: &egui::Context) {
         let avisos: Vec<mpv::Aviso> = self.mpv.as_ref().map(|m| m.avisos().collect()).unwrap_or_default();
         for aviso in avisos {
+            if self.tocando_vod.is_some() {
+                match aviso {
+                    mpv::Aviso::Tocando => {
+                        if let Some(t) = self.tocando_vod.as_mut() {
+                            if !t.confirmado {
+                                t.confirmado = true;
+                                let (titulo, fonte, ms) =
+                                    (t.titulo.clone(), t.fonte, t.desde.elapsed().as_millis());
+                                let url = t.urls.get(fonte).cloned().unwrap_or_default();
+                                telemetria::tocou("vod", &titulo, &url, fonte + 1, ms);
+                            }
+                        }
+                    }
+                    mpv::Aviso::Falhou => self.proxima_fonte_vod("mpv: erro na fonte"),
+                    // Filme que termina é fim mesmo; canal que termina é fonte caindo.
+                    mpv::Aviso::Fim => {
+                        let acabou = self.tocando_vod.as_ref().map(|t| t.confirmado).unwrap_or(false);
+                        if acabou {
+                            telemetria::parou();
+                            self.tocando_vod = None;
+                            self.lista_aberta = true;
+                        } else {
+                            self.proxima_fonte_vod("a fonte não abriu");
+                        }
+                    }
+                }
+                continue;
+            }
             match aviso {
                 mpv::Aviso::Tocando => {
                     if let Some(t) = self.tocando.as_mut() {
@@ -261,7 +446,7 @@ impl App {
                             let (canal, fonte) = (t.canal, t.fonte);
                             if let Some(c) = self.canais.get(canal) {
                                 let url = c.fontes.get(fonte).map(|f| f.url.clone()).unwrap_or_default();
-                                telemetria::tocou(&c.nome, &url, fonte + 1, ms);
+                                telemetria::tocou("live", &c.nome, &url, fonte + 1, ms);
                             }
                         }
                     }
@@ -279,7 +464,15 @@ impl App {
         if estourou {
             self.proxima_fonte("a fonte não abriu em 14 s");
         }
-        if self.tocando.is_some() {
+        let estourou_vod = self
+            .tocando_vod
+            .as_ref()
+            .map(|t| !t.confirmado && t.desde.elapsed() > ESPERA_DA_FONTE)
+            .unwrap_or(false);
+        if estourou_vod {
+            self.proxima_fonte_vod("a fonte não abriu em 14 s");
+        }
+        if self.tocando.is_some() || self.tocando_vod.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
     }
@@ -294,6 +487,27 @@ impl App {
                     self.logos.insert(url, Some(textura));
                 }
                 Recado::Atualizacao(v) => self.nova_versao = Some(v),
+                Recado::Guia => {}
+                Recado::Gavetas(lista) => self.gavetas = lista,
+                Recado::Acervo(lista) => self.acervo = lista,
+                Recado::Filmes(letra, lista) => {
+                    if letra == self.letra {
+                        self.filmes = lista;
+                        self.carregando_vod = false;
+                    }
+                }
+                Recado::Series(letra, lista) => {
+                    if letra == self.letra {
+                        self.series = lista;
+                        self.carregando_vod = false;
+                    }
+                }
+                Recado::Episodios(serie, lista) => {
+                    if self.serie_aberta.as_ref().map(|s| s.titulo == serie).unwrap_or(false) {
+                        self.episodios = lista;
+                        self.carregando_vod = false;
+                    }
+                }
             }
         }
         if self.ultima_checagem.elapsed() > Duration::from_secs(3600) {
@@ -341,7 +555,7 @@ impl App {
         let escrevendo = ctx.memory(|m| m.focused().is_some());
 
         // Número de canal, e o código que revela a lista restrita.
-        if !escrevendo {
+        if !escrevendo && self.aba == Aba::Canais {
             for c in texto_digitado.chars().filter(|c| c.is_ascii_digit()) {
                 if self.digitado_em.elapsed() > Duration::from_millis(1500) {
                     self.digitado.clear();
@@ -372,6 +586,24 @@ impl App {
                 continue;
             }
             let visiveis = self.visiveis();
+            // Nas listas do acervo as setas andam por elas, não pelos canais.
+            if self.aba != Aba::Canais
+                && matches!(key, egui::Key::ArrowDown | egui::Key::ArrowUp | egui::Key::Enter)
+            {
+                let total = if self.serie_aberta.is_some() {
+                    self.episodios.len()
+                } else if self.aba == Aba::Filmes {
+                    self.filmes.len()
+                } else {
+                    self.series.len()
+                };
+                match key {
+                    egui::Key::ArrowDown => self.foco_vod = (self.foco_vod + 1).min(total.saturating_sub(1)),
+                    egui::Key::ArrowUp => self.foco_vod = self.foco_vod.saturating_sub(1),
+                    _ => self.abrir_do_acervo(),
+                }
+                continue;
+            }
             match key {
                 egui::Key::ArrowDown | egui::Key::ArrowUp => {
                     if !self.lista_aberta {
@@ -427,6 +659,23 @@ impl App {
                     }
                 }
                 egui::Key::ArrowRight => self.escolher_fonte_seguinte(),
+                egui::Key::G => {
+                    self.guia_aberto = !self.guia_aberto;
+                }
+                egui::Key::Tab => {
+                    self.aba = match self.aba {
+                        Aba::Canais => Aba::Filmes,
+                        Aba::Filmes => Aba::Series,
+                        Aba::Series => Aba::Canais,
+                    };
+                    self.busca.clear();
+                    self.foco_vod = 0;
+                    if self.aba != Aba::Canais && self.filmes.is_empty() && self.series.is_empty() {
+                        let letra = self.letra.clone();
+                        self.letra.clear();
+                        self.abrir_letra(letra);
+                    }
+                }
                 egui::Key::Plus | egui::Key::Equals => self.mudar_volume(5),
                 egui::Key::Minus => self.mudar_volume(-5),
                 egui::Key::L => {
@@ -436,6 +685,28 @@ impl App {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Enter nas listas do acervo: toca o filme ou o episódio, ou abre a série.
+    fn abrir_do_acervo(&mut self) {
+        if self.serie_aberta.is_some() {
+            let Some(episodio) = self.episodios.get(self.foco_vod).cloned() else { return };
+            let titulo = format!(
+                "{} · T{} E{}",
+                self.serie_aberta.as_ref().map(|s| s.titulo.clone()).unwrap_or_default(),
+                episodio.temporada,
+                episodio.numero
+            );
+            self.tocar_vod(titulo, episodio.urls, 0, true);
+            return;
+        }
+        if self.aba == Aba::Filmes {
+            let Some(filme) = self.filmes.get(self.foco_vod).cloned() else { return };
+            let Some((_, urls)) = filme.versoes.first().cloned() else { return };
+            self.tocar_vod(filme.titulo, urls, 0, true);
+        } else if let Some(serie) = self.series.get(self.foco_vod).cloned() {
+            self.abrir_serie(serie);
         }
     }
 
@@ -511,4 +782,6 @@ impl eframe::App for App {
     }
 }
 
+mod epg;
+mod vod;
 mod tela;

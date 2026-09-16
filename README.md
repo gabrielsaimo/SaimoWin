@@ -35,6 +35,14 @@ cargo run --release
 `SAIMO_MPV` aponta para outra biblioteca do mpv e `SAIMO_SEM_TELEMETRIA=1`
 impede que o teste vire aparelho no painel.
 
+## Guia e acervo
+
+O guia sai das mesmas fontes dos outros aplicativos: meuguia.tv para a TV aberta
+e os canais grandes, o guia da própria Pluto TV casado pelo id que está no link
+do canal, e dois feeds XMLTV para o resto. Fica guardado por seis horas.
+
+Filmes e séries vêm do acervo publicado em `vod/`, fatiado por letra.
+
 ## O que ainda não tem
 
-Guia de programação, filmes e séries. O TV Box e o Mac têm; aqui entra depois.
+Capas dos filmes e continuar de onde parou.

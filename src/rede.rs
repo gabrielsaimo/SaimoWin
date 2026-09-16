@@ -22,6 +22,12 @@ pub fn bytes(url: &str, limite: usize) -> Option<Vec<u8>> {
     Some(dados)
 }
 
+/// O corpo da resposta conforme ele chega, já descomprimido: os feeds do guia
+/// têm dezenas de megabytes e não cabem bem na memória de uma vez.
+pub fn fluxo(url: &str) -> Option<Box<dyn Read + Send + Sync>> {
+    Some(agente().get(url).call().ok()?.into_reader())
+}
+
 pub fn json(url: &str) -> Option<serde_json::Value> {
     agente().get(url).call().ok()?.into_json().ok()
 }

@@ -34,9 +34,13 @@ Como usar
 1. Descompacte esta pasta onde quiser (por exemplo, na Área de Trabalho).
 2. Abra "Saimo TV.exe". Os dois arquivos precisam ficar juntos na mesma pasta.
 
+O que tem
+  Canais ao vivo, com guia de programação, e o acervo de filmes e séries.
+
 Teclas
   setas       andam na lista          Enter     assiste
-  Esc         mostra/esconde a lista  seta →    troca a fonte do canal
+  Tab         muda de lista           G         guia do canal
+  Esc         mostra/esconde a lista  seta →    troca a fonte
   F ou F11    tela cheia              Espaço    pausa
   L           favorita                M         sem som
   + e -       volume                  números   vão direto ao canal
