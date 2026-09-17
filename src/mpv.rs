@@ -337,6 +337,11 @@ impl Mpv {
         self.avisos.try_iter()
     }
 
+    /// Qualquer propriedade do mpv ("speed", "panscan"…).
+    pub fn definir(&self, nome: &str, valor: &str) {
+        self.propriedade(nome, valor);
+    }
+
     fn propriedade(&self, nome: &str, valor: &str) {
         let (Ok(n), Ok(v)) = (CString::new(nome), CString::new(valor)) else { return };
         unsafe { (self.simbolos.set_property_string)(self.handle.0, n.as_ptr(), v.as_ptr()) };

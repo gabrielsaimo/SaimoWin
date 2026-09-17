@@ -19,6 +19,8 @@ pub struct Gaveta {
 #[derive(Clone, Debug)]
 pub struct Filme {
     pub titulo: String,
+    /// Só aparece depois do código (seção Extras).
+    pub reservado: bool,
     /// "dub", "leg"… na ordem em que o catálogo publica.
     pub versoes: Vec<(String, Vec<String>)>,
 }
@@ -165,7 +167,7 @@ fn ler_filmes(letra: &str, prefixo: &str) -> Vec<Filme> {
             if versoes.is_empty() {
                 return None;
             }
-            Some(Filme { titulo: campos[0].to_string(), versoes })
+            Some(Filme { titulo: campos[0].to_string(), reservado: prefixo == "reservado", versoes })
         })
         .collect()
 }

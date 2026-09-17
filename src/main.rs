@@ -33,11 +33,16 @@ const ESPERA_DA_FONTE: Duration = Duration::from_secs(14);
 const SUMIR_LETREIRO: Duration = Duration::from_secs(6);
 
 fn main() -> eframe::Result<()> {
+    let mut janela = egui::ViewportBuilder::default()
+        .with_title("Saimo TV")
+        .with_inner_size([1280.0, 720.0])
+        .with_min_inner_size([800.0, 480.0]);
+    if std::env::var("SAIMO_FOTO").is_ok() {
+        // Foto de teste: abre sem tomar o foco de quem está usando a máquina.
+        janela = janela.with_active(false);
+    }
     let opcoes = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Saimo TV")
-            .with_inner_size([1280.0, 720.0])
-            .with_min_inner_size([800.0, 480.0]),
+        viewport: janela,
         vsync: true,
         ..Default::default()
     };
@@ -60,12 +65,22 @@ enum Recado {
     Capa,
 }
 
-/// As três listas da tela.
+/// O que ocupa a área principal: o vídeo, ou uma das seções do acervo —
+/// como no Mac, onde o acervo abre por cima do player.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Aba {
     Canais,
     Filmes,
     Series,
+    Favoritos,
+    Extras,
+}
+
+impl Aba {
+    /// As seções que mostram filmes (e não séries).
+    pub fn de_filmes(self) -> bool {
+        matches!(self, Aba::Filmes | Aba::Favoritos | Aba::Extras)
+    }
 }
 
 /// O que está tocando quando não é canal: filme ou episódio.
@@ -77,11 +92,11 @@ pub struct TocandoVod {
     pub confirmado: bool,
 }
 
-struct Tocando {
-    canal: usize,
-    fonte: usize,
-    desde: Instant,
-    confirmado: bool,
+pub struct Tocando {
+    pub canal: usize,
+    pub fonte: usize,
+    pub desde: Instant,
+    pub confirmado: bool,
 }
 
 struct App {
@@ -120,19 +135,25 @@ struct App {
     /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
     acervo: Vec<vod::Achado>,
     favoritos_vod: Vec<String>,
-    so_favoritos: bool,
+    /// Busca do acervo, separada da busca de canais da barra lateral.
+    busca_vod: String,
+    /// Colunas da grade na última pintura, para as setas andarem por linha.
+    pub colunas_vod: usize,
     ultimo_progresso: Instant,
     foco_vod: usize,
     tocando_vod: Option<TocandoVod>,
+    /// Até quando a barra de controles fica à vista; mexer o mouse renova.
+    controles_ate: Instant,
+    ajuda_aberta: bool,
+    velocidade: f32,
+    preencher: bool,
+    ultimo_mouse: Option<egui::Pos2>,
 }
 
 impl App {
     fn novo(cc: &eframe::CreationContext<'_>) -> Self {
         let (emissor, recados) = channel();
-        let mut estilo = (*cc.egui_ctx.style()).clone();
-        estilo.visuals = egui::Visuals::dark();
-        estilo.visuals.panel_fill = egui::Color32::from_rgb(10, 10, 12);
-        cc.egui_ctx.set_style(estilo);
+        tela::aplicar_estilo(&cc.egui_ctx);
 
         let (mpv, erro_do_mpv) = match mpv::Mpv::novo(&caminho_do_mpv()) {
             Ok(m) => (Some(std::sync::Arc::new(m)), None),
@@ -218,10 +239,16 @@ impl App {
             carregando_vod: false,
             acervo: Vec::new(),
             favoritos_vod: ler_lista("favoritos-vod.txt"),
-            so_favoritos: false,
+            busca_vod: String::new(),
+            colunas_vod: 5,
             ultimo_progresso: Instant::now(),
             foco_vod: 0,
             tocando_vod: None,
+            controles_ate: Instant::now() + Duration::from_secs(6),
+            ajuda_aberta: false,
+            velocidade: 1.0,
+            preencher: false,
+            ultimo_mouse: None,
         };
         app.reordenar();
         app
@@ -357,7 +384,8 @@ impl App {
             confirmado: false,
         });
         self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
-        self.lista_aberta = false;
+        self.aba = Aba::Canais;
+        self.mostrar_controles();
     }
 
     /// Grava onde o filme parou. `agora` força, em vez de esperar os 15 s.
@@ -629,12 +657,24 @@ impl App {
     }
 
     fn teclado(&mut self, ctx: &egui::Context) {
-        let (teclas, texto_digitado) = ctx.input(|i| {
-            (i.events.clone(), i.events.iter().filter_map(|e| match e {
-                egui::Event::Text(t) => Some(t.clone()),
-                _ => None,
-            }).collect::<String>())
+        let (eventos, texto_digitado, mouse) = ctx.input(|i| {
+            (
+                i.events.clone(),
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+                i.pointer.hover_pos(),
+            )
         });
+        // Mexer o mouse traz os controles de volta, como no Mac.
+        if mouse.is_some() && mouse != self.ultimo_mouse {
+            self.ultimo_mouse = mouse;
+            self.mostrar_controles();
+        }
         let escrevendo = ctx.memory(|m| m.focused().is_some());
 
         // Número de canal, e o código que revela a lista restrita.
@@ -645,6 +685,9 @@ impl App {
                 }
                 self.digitado.push(c);
                 self.digitado_em = Instant::now();
+            }
+            if texto_digitado.contains('?') {
+                self.ajuda_aberta = !self.ajuda_aberta;
             }
         }
         if !self.digitado.is_empty() && self.digitado_em.elapsed() > Duration::from_millis(1200) {
@@ -657,45 +700,74 @@ impl App {
                 let letra = self.letra.clone();
                 self.letra.clear();
                 self.abrir_letra(letra);
+                if !self.liberado && self.aba == Aba::Extras {
+                    self.abrir_secao(Aba::Filmes);
+                }
             } else if let Ok(numero) = digitado.parse::<usize>() {
                 if numero >= 1 && numero <= self.canais.len() {
                     self.tocar(numero - 1, 0, true);
                     self.foco = numero - 1;
-                    self.lista_aberta = false;
                 }
             }
         }
 
-        for evento in teclas {
+        for evento in eventos {
             let egui::Event::Key { key, pressed: true, modifiers, .. } = evento else { continue };
+            // Com a busca aberta as letras são texto; só as teclas de sair e de
+            // descer para a lista passam.
             if escrevendo && !matches!(key, egui::Key::Escape | egui::Key::Enter | egui::Key::ArrowDown) {
                 continue;
             }
-            let visiveis = self.visiveis();
-            // Nas listas do acervo as setas andam por elas, não pelos canais.
-            if self.aba != Aba::Canais
-                && matches!(key, egui::Key::ArrowDown | egui::Key::ArrowUp | egui::Key::Enter)
-            {
-                let total = if self.serie_aberta.is_some() {
-                    self.episodios.len()
-                } else if self.aba == Aba::Filmes {
-                    self.filmes.len()
-                } else {
-                    self.series.len()
-                };
-                match key {
-                    egui::Key::ArrowDown => self.foco_vod = (self.foco_vod + 1).min(total.saturating_sub(1)),
-                    egui::Key::ArrowUp => self.foco_vod = self.foco_vod.saturating_sub(1),
-                    _ => self.abrir_do_acervo(),
+            if escrevendo && matches!(key, egui::Key::Escape | egui::Key::Enter | egui::Key::ArrowDown) {
+                ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
+                if key != egui::Key::Enter {
+                    continue;
                 }
-                continue;
             }
             match key {
-                egui::Key::ArrowDown | egui::Key::ArrowUp => {
-                    if !self.lista_aberta {
-                        self.lista_aberta = true;
-                        continue;
+                egui::Key::Space => self.alternar_pausa(),
+                egui::Key::F if modifiers.ctrl => {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new("busca-canais")));
+                    self.lista_aberta = true;
+                }
+                egui::Key::F | egui::Key::F11 => self.alternar_tela_cheia(ctx),
+                egui::Key::F1 | egui::Key::H => self.ajuda_aberta = !self.ajuda_aberta,
+                egui::Key::G => {
+                    self.guia_aberto = !self.guia_aberto;
+                    self.abrir_secao(Aba::Canais);
+                }
+                egui::Key::L => self.lista_aberta = !self.lista_aberta,
+                egui::Key::M => self.alternar_mudo(),
+                egui::Key::Plus | egui::Key::Equals => self.mudar_volume(5),
+                egui::Key::Minus => self.mudar_volume(-5),
+                egui::Key::PageUp => self.pular_canal(-1),
+                egui::Key::PageDown => self.pular_canal(1),
+                egui::Key::Tab => {
+                    let proxima = match self.aba {
+                        Aba::Canais => Aba::Filmes,
+                        Aba::Filmes => Aba::Series,
+                        _ => Aba::Canais,
+                    };
+                    self.abrir_secao(proxima);
+                }
+                egui::Key::Escape => {
+                    if self.ajuda_aberta {
+                        self.ajuda_aberta = false;
+                    } else if self.serie_aberta.is_some() {
+                        self.serie_aberta = None;
+                    } else if self.aba != Aba::Canais {
+                        self.abrir_secao(Aba::Canais);
+                    } else if self.guia_aberto {
+                        self.guia_aberto = false;
+                    } else if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                    } else {
+                        self.lista_aberta = !self.lista_aberta;
                     }
+                }
+                _ if self.aba != Aba::Canais => self.tecla_no_acervo(key),
+                egui::Key::ArrowDown | egui::Key::ArrowUp => {
+                    let visiveis = self.visiveis();
                     let atual = visiveis.iter().position(|i| *i == self.foco).unwrap_or(0);
                     let novo = if key == egui::Key::ArrowDown {
                         (atual + 1).min(visiveis.len().saturating_sub(1))
@@ -704,107 +776,232 @@ impl App {
                     };
                     if let Some(i) = visiveis.get(novo) {
                         self.foco = *i;
+                        self.lista_aberta = true;
                     }
                 }
                 egui::Key::Enter => {
-                    if escrevendo {
-                        ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
-                    }
-                    if let Some(i) = visiveis.iter().find(|i| **i == self.foco).copied() {
-                        self.tocar(i, 0, true);
-                        self.lista_aberta = false;
+                    let foco = self.foco;
+                    if self.visiveis().contains(&foco) {
+                        self.tocar(foco, 0, true);
                     }
                 }
-                egui::Key::Escape => {
-                    if escrevendo {
-                        ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
-                    } else if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                egui::Key::ArrowRight => {
+                    if self.tocando_vod.is_some() {
+                        self.avancar(10.0);
                     } else {
-                        self.lista_aberta = !self.lista_aberta;
+                        self.escolher_fonte_seguinte();
                     }
                 }
-                egui::Key::F if !modifiers.ctrl => {
-                    let cheia = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!cheia));
-                }
-                egui::Key::F11 => {
-                    let cheia = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!cheia));
-                }
-                egui::Key::Space => {
-                    self.pausado = !self.pausado;
-                    if let Some(mpv) = self.mpv.as_ref() {
-                        mpv.pausa(self.pausado);
+                egui::Key::ArrowLeft => {
+                    if self.tocando_vod.is_some() {
+                        self.avancar(-10.0);
                     }
                 }
-                egui::Key::M => {
-                    self.mudo = !self.mudo;
-                    if let Some(mpv) = self.mpv.as_ref() {
-                        mpv.mudo(self.mudo);
+                egui::Key::S => {
+                    if let Some(canal) = self.canais.get(self.foco).map(|c| c.nome.clone()) {
+                        self.favoritar(canal);
                     }
                 }
-                egui::Key::ArrowRight => self.escolher_fonte_seguinte(),
-                egui::Key::G => {
-                    self.guia_aberto = !self.guia_aberto;
-                }
-                egui::Key::Tab => {
-                    self.aba = match self.aba {
-                        Aba::Canais => Aba::Filmes,
-                        Aba::Filmes => Aba::Series,
-                        Aba::Series => Aba::Canais,
-                    };
-                    self.busca.clear();
-                    self.foco_vod = 0;
-                    if self.aba != Aba::Canais && self.filmes.is_empty() && self.series.is_empty() {
-                        let letra = self.letra.clone();
-                        self.letra.clear();
-                        self.abrir_letra(letra);
-                    }
-                }
-                egui::Key::Plus | egui::Key::Equals => self.mudar_volume(5),
-                egui::Key::Minus => self.mudar_volume(-5),
-                egui::Key::L => match self.aba {
-                    Aba::Canais => {
-                        if let Some(canal) = self.canais.get(self.foco).map(|c| c.nome.clone()) {
-                            self.favoritar(canal);
-                        }
-                    }
-                    Aba::Filmes => {
-                        if let Some(filme) = self.filmes.get(self.foco_vod).map(|f| f.titulo.clone()) {
-                            self.favoritar_vod(filme);
-                        }
-                    }
-                    Aba::Series => {
-                        if let Some(serie) = self.series.get(self.foco_vod).map(|s| s.titulo.clone()) {
-                            self.favoritar_vod(serie);
-                        }
-                    }
-                },
                 _ => {}
             }
         }
     }
 
-    /// Enter nas listas do acervo: toca o filme ou o episódio, ou abre a série.
-    fn abrir_do_acervo(&mut self) {
+    /// Setas, Enter e estrela dentro da grade do acervo.
+    fn tecla_no_acervo(&mut self, key: egui::Key) {
+        let colunas = self.colunas_vod.max(1);
+        let total = self.itens_do_acervo();
+        match key {
+            egui::Key::ArrowRight => self.foco_vod = (self.foco_vod + 1).min(total.saturating_sub(1)),
+            egui::Key::ArrowLeft => self.foco_vod = self.foco_vod.saturating_sub(1),
+            egui::Key::ArrowDown => {
+                let passo = if self.serie_aberta.is_some() { 1 } else { colunas };
+                self.foco_vod = (self.foco_vod + passo).min(total.saturating_sub(1));
+            }
+            egui::Key::ArrowUp => {
+                let passo = if self.serie_aberta.is_some() { 1 } else { colunas };
+                self.foco_vod = self.foco_vod.saturating_sub(passo);
+            }
+            egui::Key::Enter => self.abrir_do_acervo(),
+            egui::Key::S => {
+                if let Some(titulo) = self.titulo_em_foco() {
+                    self.favoritar_vod(titulo);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Filmes da seção aberta, já filtrados pela busca e pela seção.
+    pub fn filmes_na_tela(&self) -> Vec<vod::Filme> {
+        let busca = catalogo::chave_de_ordem(self.busca_vod.trim());
+        self.filmes
+            .iter()
+            .filter(|f| match self.aba {
+                Aba::Favoritos => self.favoritos_vod.iter().any(|t| *t == f.titulo),
+                Aba::Extras => f.reservado,
+                _ => !f.reservado || self.liberado,
+            })
+            .filter(|f| busca.is_empty() || catalogo::chave_de_ordem(&f.titulo).contains(&busca))
+            .cloned()
+            .collect()
+    }
+
+    pub fn series_na_tela(&self) -> Vec<vod::Serie> {
+        let busca = catalogo::chave_de_ordem(self.busca_vod.trim());
+        self.series
+            .iter()
+            .filter(|s| self.aba != Aba::Favoritos || self.favoritos_vod.iter().any(|t| *t == s.titulo))
+            .filter(|s| busca.is_empty() || catalogo::chave_de_ordem(&s.titulo).contains(&busca))
+            .cloned()
+            .collect()
+    }
+
+    fn itens_do_acervo(&self) -> usize {
         if self.serie_aberta.is_some() {
+            self.episodios.len()
+        } else if self.aba == Aba::Series {
+            self.series_na_tela().len()
+        } else {
+            self.filmes_na_tela().len()
+        }
+    }
+
+    fn titulo_em_foco(&self) -> Option<String> {
+        if self.aba == Aba::Series {
+            self.series_na_tela().get(self.foco_vod).map(|s| s.titulo.clone())
+        } else {
+            self.filmes_na_tela().get(self.foco_vod).map(|f| f.titulo.clone())
+        }
+    }
+
+    /// Enter no acervo: toca o filme ou o episódio, ou abre a série.
+    pub fn abrir_do_acervo(&mut self) {
+        if let Some(serie) = self.serie_aberta.clone() {
             let Some(episodio) = self.episodios.get(self.foco_vod).cloned() else { return };
-            let titulo = format!(
-                "{} · T{} E{}",
-                self.serie_aberta.as_ref().map(|s| s.titulo.clone()).unwrap_or_default(),
-                episodio.temporada,
-                episodio.numero
-            );
+            let titulo = format!("{} · T{} E{}", serie.titulo, episodio.temporada, episodio.numero);
             self.tocar_vod(titulo, episodio.urls, 0, true);
             return;
         }
-        if self.aba == Aba::Filmes {
-            let Some(filme) = self.filmes.get(self.foco_vod).cloned() else { return };
-            let Some((_, urls)) = filme.versoes.first().cloned() else { return };
-            self.tocar_vod(filme.titulo, urls, 0, true);
-        } else if let Some(serie) = self.series.get(self.foco_vod).cloned() {
-            self.abrir_serie(serie);
+        if self.aba == Aba::Series {
+            if let Some(serie) = self.series_na_tela().get(self.foco_vod).cloned() {
+                self.foco_vod = 0;
+                self.abrir_serie(serie);
+            }
+        } else if let Some(filme) = self.filmes_na_tela().get(self.foco_vod).cloned() {
+            if let Some((_, urls)) = filme.versoes.first().cloned() {
+                self.tocar_vod(filme.titulo, urls, 0, true);
+            }
+        }
+    }
+
+    // MARK: - Comandos da barra
+
+    pub fn mostrar_controles(&mut self) {
+        self.controles_ate = Instant::now() + Duration::from_secs(3);
+    }
+
+    pub fn controles_visiveis(&self) -> bool {
+        Instant::now() < self.controles_ate || self.pausado
+    }
+
+    pub fn alternar_pausa(&mut self) {
+        self.pausado = !self.pausado;
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.pausa(self.pausado);
+        }
+        self.mostrar_controles();
+    }
+
+    pub fn alternar_mudo(&mut self) {
+        self.mudo = !self.mudo;
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.mudo(self.mudo);
+        }
+        self.mostrar_controles();
+    }
+
+    pub fn definir_volume(&mut self, valor: i32) {
+        self.volume = valor.clamp(0, 130);
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.volume(self.volume);
+        }
+    }
+
+    /// Canal vizinho na lista que está na tela; -1 é o de cima.
+    pub fn pular_canal(&mut self, passo: i64) {
+        let visiveis = self.visiveis();
+        if visiveis.is_empty() {
+            return;
+        }
+        let atual = self
+            .tocando
+            .as_ref()
+            .and_then(|t| visiveis.iter().position(|i| *i == t.canal))
+            .unwrap_or(0) as i64;
+        let novo = (atual + passo).rem_euclid(visiveis.len() as i64) as usize;
+        let canal = visiveis[novo];
+        self.foco = canal;
+        self.tocar(canal, 0, true);
+    }
+
+    pub fn alternar_tela_cheia(&self, ctx: &egui::Context) {
+        let cheia = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!cheia));
+    }
+
+    /// Avança ou volta no filme (segundos negativos voltam).
+    pub fn avancar(&mut self, segundos: f64) {
+        let Some(mpv) = self.mpv.as_ref() else { return };
+        if let Some((posicao, duracao)) = mpv.posicao() {
+            mpv.ir_para((posicao + segundos).clamp(0.0, duracao - 1.0));
+        }
+        self.mostrar_controles();
+    }
+
+    pub fn ir_para(&mut self, segundos: f64) {
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.ir_para(segundos);
+        }
+    }
+
+    pub fn definir_velocidade(&mut self, velocidade: f32) {
+        self.velocidade = velocidade;
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.definir("speed", &format!("{velocidade}"));
+        }
+        self.aviso = Some((format!("velocidade {velocidade}×"), Instant::now()));
+    }
+
+    /// Preencher a tela corta as bordas em vez de deixar faixas pretas.
+    pub fn alternar_preencher(&mut self) {
+        self.preencher = !self.preencher;
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.definir("panscan", if self.preencher { "1.0" } else { "0.0" });
+        }
+    }
+
+    pub fn escolher_fonte(&mut self, fonte: usize) {
+        if let Some(canal) = self.tocando.as_ref().map(|t| t.canal) {
+            self.tocar(canal, fonte, false);
+        } else if let Some(filme) = self.tocando_vod.as_ref() {
+            let (titulo, urls) = (filme.titulo.clone(), filme.urls.clone());
+            self.tocar_vod(titulo, urls, fonte, false);
+        }
+    }
+
+    pub fn abrir_secao(&mut self, aba: Aba) {
+        if self.aba == aba {
+            return;
+        }
+        self.aba = aba;
+        self.busca_vod.clear();
+        self.foco_vod = 0;
+        self.serie_aberta = None;
+        if aba != Aba::Canais && self.filmes.is_empty() && self.series.is_empty() {
+            let letra = self.letra.clone();
+            self.letra.clear();
+            self.abrir_letra(letra);
         }
     }
 
@@ -851,6 +1048,49 @@ fn caminho_do_mpv() -> std::path::PathBuf {
     }
 }
 
+/// Conferência visual sem depender de quem está na frente da tela:
+/// `SAIMO_FOTO=arquivo.png` salva a própria janela depois de alguns segundos e
+/// fecha. `SAIMO_FOTO_TELA` escolhe o que mostrar (filmes, series, guia,
+/// atalhos). Não faz nada sem a variável.
+fn foto_de_teste(app: &mut App, ctx: &egui::Context) {
+    let Ok(destino) = std::env::var("SAIMO_FOTO") else { return };
+    static INICIO: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    static PEDIDA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let inicio = *INICIO.get_or_init(Instant::now);
+    ctx.request_repaint_after(Duration::from_millis(200));
+
+    let espera = std::env::var("SAIMO_FOTO_ESPERA").ok().and_then(|v| v.parse().ok()).unwrap_or(18);
+    if inicio.elapsed() > Duration::from_secs(3) && inicio.elapsed() < Duration::from_secs(4) {
+        match std::env::var("SAIMO_FOTO_TELA").unwrap_or_default().as_str() {
+            "filmes" => app.abrir_secao(Aba::Filmes),
+            "series" => app.abrir_secao(Aba::Series),
+            "guia" => app.guia_aberto = true,
+            "atalhos" => app.ajuda_aberta = true,
+            _ => {}
+        }
+    }
+    if inicio.elapsed() > Duration::from_secs(espera) {
+        app.mostrar_controles();
+        if !PEDIDA.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+        }
+    }
+    let imagem = ctx.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Screenshot { image, .. } => Some(image.clone()),
+            _ => None,
+        })
+    });
+    if let Some(imagem) = imagem {
+        let [w, h] = imagem.size;
+        let bytes: Vec<u8> = imagem.pixels.iter().flat_map(|c| c.to_array()).collect();
+        if let Some(buffer) = image::RgbaImage::from_raw(w as u32, h as u32, bytes) {
+            let _ = buffer.save(&destino);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
 fn ler_favoritos() -> Vec<String> {
     ler_lista("favoritos.txt")
 }
@@ -880,6 +1120,7 @@ impl eframe::App for App {
         self.teclado(ctx);
         self.baixar_logos_pendentes();
 
+        foto_de_teste(self, ctx);
         tela::desenhar(self, ctx);
 
         // Capa e logo pedidos durante o desenho só chegam no quadro seguinte:
