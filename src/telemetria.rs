@@ -6,7 +6,7 @@
 //! Sem rede o monitor fica sem o dado e o app continua igual.
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const BASE: &str = "https://saimo-monitor.gabrielsaimo68.workers.dev/v1";
 const PLATAFORMA: &str = "windows";
@@ -22,10 +22,30 @@ struct Tocando {
 struct Estado {
     id: String,
     tocando: Option<Tocando>,
-    contando_desde: Instant,
+    /// Só conta tempo com o vídeo andando: pausado ou carregando não é
+    /// assistir. `acumulado` guarda o que já andou desde a última batida.
+    acumulado: Duration,
+    rodando_desde: Option<Instant>,
+    pausado: bool,
+    qualidade: Option<String>,
+    travou_desde: Option<Instant>,
+    buscas: [Busca; 2],
     ultima_batida: Instant,
     batida_s: u64,
     erros: u32,
+}
+
+#[derive(Default)]
+struct Busca {
+    texto: String,
+    desde: Option<Instant>,
+    avisada: bool,
+}
+
+impl Estado {
+    fn segundos_rodando(&self) -> u64 {
+        (self.acumulado + self.rodando_desde.map(|d| d.elapsed()).unwrap_or_default()).as_secs()
+    }
 }
 
 static ESTADO: Mutex<Option<Estado>> = Mutex::new(None);
@@ -108,7 +128,12 @@ pub fn iniciar() {
         *estado = Some(Estado {
             id: id_do_aparelho(),
             tocando: None,
-            contando_desde: Instant::now(),
+            acumulado: Duration::ZERO,
+            rodando_desde: None,
+            pausado: false,
+            qualidade: None,
+            travou_desde: None,
+            buscas: Default::default(),
             ultima_batida: Instant::now(),
             batida_s: 300,
             erros: 0,
@@ -126,6 +151,8 @@ pub fn iniciar() {
             "model": modelo(),
             "os": sistema(),
             "deviceType": "computador",
+            "net": "cabo",
+            "lang": std::env::var("LANG").ok(),
         })
     };
     std::thread::spawn(move || {
@@ -157,11 +184,17 @@ fn bater() {
     let corpo = {
         let mut estado = ESTADO.lock().unwrap();
         let Some(estado) = estado.as_mut() else { return };
-        let segundos = if estado.tocando.is_some() { estado.contando_desde.elapsed().as_secs() } else { 0 };
-        estado.contando_desde = Instant::now();
+        let segundos = if estado.tocando.is_some() { estado.segundos_rodando() } else { 0 };
+        estado.acumulado = Duration::ZERO;
+        if estado.rodando_desde.is_some() {
+            estado.rodando_desde = Some(Instant::now());
+        }
         estado.ultima_batida = Instant::now();
         let tocando = match &estado.tocando {
-            Some(t) => serde_json::json!({ "kind": t.kind, "title": t.titulo, "host": t.host }),
+            Some(t) => serde_json::json!({
+                "kind": t.kind, "title": t.titulo, "host": t.host,
+                "paused": estado.pausado, "quality": estado.qualidade,
+            }),
             None => serde_json::Value::Null,
         };
         serde_json::json!({ "seconds": segundos, "playing": tocando })
@@ -191,7 +224,7 @@ pub fn comecou(kind: &str, titulo: &str, url: &str, fonte: usize, nova: bool) {
         match estado.as_ref() {
             Some(e) => {
                 e.tocando.as_ref().map(|t| t.titulo != titulo).unwrap_or(false)
-                    && e.contando_desde.elapsed().as_secs() >= MINIMO_PARA_CONTAR_S
+                    && e.segundos_rodando() >= MINIMO_PARA_CONTAR_S
             }
             None => return,
         }
@@ -203,8 +236,12 @@ pub fn comecou(kind: &str, titulo: &str, url: &str, fonte: usize, nova: bool) {
         let mut estado = ESTADO.lock().unwrap();
         let Some(estado) = estado.as_mut() else { return };
         if estado.tocando.as_ref().map(|t| t.titulo != titulo).unwrap_or(true) {
-            estado.contando_desde = Instant::now();
+            estado.acumulado = Duration::ZERO;
+            estado.rodando_desde = None;
+            estado.pausado = false;
+            estado.qualidade = None;
         }
+        estado.travou_desde = None;
         estado.tocando = Some(Tocando {
             kind: kind.to_string(),
             titulo: titulo.to_string(),
@@ -217,7 +254,100 @@ pub fn comecou(kind: &str, titulo: &str, url: &str, fonte: usize, nova: bool) {
 }
 
 pub fn tocou(kind: &str, titulo: &str, url: &str, fonte: usize, ms: u128) {
-    evento("play_ok", Some(kind), Some(titulo), Some(url), Some(fonte), Some(format!("{ms} ms")));
+    enviar("event", serde_json::json!({
+        "type": "play_ok",
+        "kind": kind,
+        "title": titulo,
+        "host": host(url),
+        "source": fonte as i64,
+        "detail": format!("{ms} ms"),
+        "ms": ms as u64,
+    }));
+}
+
+/// Chamada a cada quadro com o que o player está fazendo agora.
+///
+/// `rodando` é o vídeo confirmado na tela; `carregando` é o mpv parado
+/// esperando dados. Pausar ou voltar manda batida na hora, para o painel não
+/// mostrar como assistindo quem pausou. Carregar depois de já ter começado é
+/// travamento, e vai para o painel com a duração.
+pub fn video(rodando: bool, pausado: bool, carregando: bool, pulou: bool, qualidade: Option<String>) {
+    let mut bater_agora = false;
+    let mut travou: Option<(String, String, Option<String>, u128)> = None;
+    {
+        let mut estado = ESTADO.lock().unwrap();
+        let Some(e) = estado.as_mut() else { return };
+        if e.tocando.is_none() {
+            return;
+        }
+        let andando = rodando && !pausado && !carregando;
+        match (andando, e.rodando_desde) {
+            (true, None) => e.rodando_desde = Some(Instant::now()),
+            (false, Some(desde)) => {
+                e.acumulado += desde.elapsed();
+                e.rodando_desde = None;
+            }
+            _ => {}
+        }
+        if rodando && pausado != e.pausado {
+            e.pausado = pausado;
+            bater_agora = true;
+        }
+        if rodando && qualidade.is_some() {
+            e.qualidade = qualidade;
+        }
+        if pulou {
+            e.travou_desde = None;
+        } else if rodando && carregando && !pausado {
+            e.travou_desde.get_or_insert_with(Instant::now);
+        } else if let Some(desde) = e.travou_desde.take() {
+            let ms = desde.elapsed().as_millis();
+            if ms >= 500 && !pausado {
+                if let Some(t) = e.tocando.as_ref() {
+                    travou = Some((t.kind.clone(), t.titulo.clone(), t.host.clone(), ms));
+                }
+            }
+        }
+    }
+    if bater_agora {
+        bater();
+    }
+    if let Some((kind, titulo, host, ms)) = travou {
+        enviar("event", serde_json::json!({
+            "type": "stall", "kind": kind, "title": titulo, "host": host,
+            "ms": ms as u64, "detail": format!("{ms} ms"),
+        }));
+    }
+}
+
+/// Busca que ficou parada 2 s sem resultado nenhum: o painel mostra o que
+/// procuram e não acham. `qual` separa a busca de canais (0) da do acervo (1).
+pub fn busca(qual: usize, texto: &str, achou: bool) {
+    let texto = texto.trim();
+    let mut avisar = None;
+    {
+        let mut estado = ESTADO.lock().unwrap();
+        let Some(e) = estado.as_mut() else { return };
+        let Some(b) = e.buscas.get_mut(qual) else { return };
+        if b.texto != texto {
+            b.texto = texto.to_string();
+            b.desde = Some(Instant::now());
+            b.avisada = false;
+            return;
+        }
+        let parada = b.desde.map(|d| d.elapsed() >= Duration::from_secs(2)).unwrap_or(false);
+        if parada && !b.avisada && !achou && texto.chars().count() >= 3 {
+            b.avisada = true;
+            avisar = Some(texto.to_string());
+        }
+    }
+    if let Some(texto) = avisar {
+        enviar("event", serde_json::json!({
+            "type": "search_miss",
+            "kind": if qual == 0 { "live" } else { "vod" },
+            "query": texto,
+        }));
+    }
 }
 
 pub fn falhou(kind: &str, titulo: &str, url: &str, fonte: usize, detalhe: &str) {
@@ -233,9 +363,7 @@ pub fn parou() {
     let fechar_conta = {
         let estado = ESTADO.lock().unwrap();
         match estado.as_ref() {
-            Some(e) if e.tocando.is_some() => {
-                e.contando_desde.elapsed().as_secs() >= MINIMO_PARA_CONTAR_S
-            }
+            Some(e) if e.tocando.is_some() => e.segundos_rodando() >= MINIMO_PARA_CONTAR_S,
             _ => return,
         }
     };
@@ -246,6 +374,11 @@ pub fn parou() {
         let mut estado = ESTADO.lock().unwrap();
         if let Some(estado) = estado.as_mut() {
             estado.tocando = None;
+            estado.acumulado = Duration::ZERO;
+            estado.rodando_desde = None;
+            estado.pausado = false;
+            estado.qualidade = None;
+            estado.travou_desde = None;
         }
     }
     evento("play_stop", None, None, None, None, None);

@@ -137,6 +137,8 @@ struct App {
     favoritos_vod: Vec<String>,
     /// Busca do acervo, separada da busca de canais da barra lateral.
     busca_vod: String,
+    quadro: u32,
+    ultimo_pulo: Option<Instant>,
     /// Colunas da grade na última pintura, para as setas andarem por linha.
     pub colunas_vod: usize,
     ultimo_progresso: Instant,
@@ -240,6 +242,8 @@ impl App {
             acervo: Vec::new(),
             favoritos_vod: ler_lista("favoritos-vod.txt"),
             busca_vod: String::new(),
+            quadro: 0,
+            ultimo_pulo: None,
             colunas_vod: 5,
             ultimo_progresso: Instant::now(),
             foco_vod: 0,
@@ -577,7 +581,38 @@ impl App {
         if self.tocando.is_some() || self.tocando_vod.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
+        self.contar_video();
         self.guardar_progresso(false);
+    }
+
+    /// O monitor só conta o tempo com o vídeo andando de verdade.
+    fn contar_video(&mut self) {
+        let rodando = self.tocando.as_ref().map(|t| t.confirmado).unwrap_or(false)
+            || self.tocando_vod.as_ref().map(|t| t.confirmado).unwrap_or(false);
+        let (carregando, qualidade) = match (rodando, self.mpv.as_ref()) {
+            (true, Some(mpv)) => {
+                let pulando = mpv.ler("seeking").as_deref() == Some("yes");
+                if pulando {
+                    self.ultimo_pulo = Some(Instant::now());
+                }
+                let carregando = pulando || mpv.ler("paused-for-cache").as_deref() == Some("yes");
+                // A altura só muda quando troca a variante: não precisa ler todo quadro.
+                let qualidade = if self.quadro % 120 == 0 {
+                    mpv.ler("height").and_then(|h| h.parse::<u32>().ok()).filter(|h| *h > 0).map(|h| format!("{h}p"))
+                } else {
+                    None
+                };
+                (carregando, qualidade)
+            }
+            _ => (false, None),
+        };
+        self.quadro = self.quadro.wrapping_add(1);
+        // Carregar logo depois de pular para outro ponto do filme é normal, não travamento.
+        let pulou = self.ultimo_pulo.map(|t| t.elapsed() < Duration::from_secs(3)).unwrap_or(false);
+        telemetria::video(rodando, self.pausado, carregando, pulou, qualidade);
+        if !self.busca.trim().is_empty() {
+            telemetria::busca(0, &self.busca, !self.visiveis().is_empty());
+        }
     }
 
     fn cuidar_dos_recados(&mut self, ctx: &egui::Context) {

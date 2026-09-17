@@ -1185,6 +1185,7 @@ fn busca_no_acervo(app: &mut App, ui: &mut egui::Ui) -> bool {
         .collect();
     ui.label(egui::RichText::new(format!("Nada na letra {} — no acervo inteiro:", app.letra)).color(SECUNDARIO));
     ui.add_space(6.0);
+    crate::telemetria::busca(1, &app.busca_vod, !achados.is_empty());
     if achados.is_empty() {
         ui.label(egui::RichText::new("Nenhum título com esse nome.").color(TERCIARIO));
         return true;
