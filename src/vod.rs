@@ -128,6 +128,9 @@ fn arquivo(nome: &str) -> Option<String> {
         }
     }
     let texto = crate::rede::texto(&format!("{BASE}{nome}"))?;
+    if let Some(pai) = local.parent() {
+        let _ = std::fs::create_dir_all(pai);
+    }
     let _ = std::fs::write(&local, &texto);
     Some(texto)
 }
@@ -191,6 +194,55 @@ pub fn series(letra: &str) -> Vec<Serie> {
             })
         })
         .collect()
+}
+
+/// Animes e doramas já vêm com todos os episódios no mesmo arquivo.
+pub fn colecao(tipo: &str) -> Vec<(Serie, Vec<Episodio>)> {
+    if tipo != "animes" && tipo != "doramas" {
+        return Vec::new();
+    }
+    let nome = format!("redeflix/links-{tipo}.txt");
+    let local = pasta().join(&nome);
+    let texto = crate::rede::texto(&format!("{BASE}{nome}")).map(|texto| {
+        if let Some(pai) = local.parent() { let _ = std::fs::create_dir_all(pai); }
+        let _ = std::fs::write(&local, &texto);
+        texto
+    }).or_else(|| std::fs::read_to_string(&local).ok());
+    let Some(texto) = texto else {
+        return Vec::new();
+    };
+    let mut saida = Vec::new();
+    let mut identidade: Option<(String, String)> = None;
+    let mut episodios = Vec::new();
+    let concluir = |identidade: &mut Option<(String, String)>, episodios: &mut Vec<Episodio>,
+                    saida: &mut Vec<(Serie, Vec<Episodio>)>| {
+        let Some((titulo, ano)) = identidade.take() else { return };
+        if episodios.is_empty() { return; }
+        let lista = std::mem::take(episodios);
+        saida.push((Serie { titulo, ano, pedaco: 0, episodios: lista.len() }, lista));
+    };
+    for linha in texto.lines() {
+        if let Some(cabecalho) = linha.strip_prefix('@') {
+            concluir(&mut identidade, &mut episodios, &mut saida);
+            let campos: Vec<&str> = cabecalho.split('\t').collect();
+            identidade = campos.first().filter(|titulo| !titulo.is_empty()).map(|titulo| {
+                ((*titulo).to_string(), campos.get(1).copied().unwrap_or("").to_string())
+            });
+            continue;
+        }
+        if identidade.is_none() { continue; }
+        let campos: Vec<&str> = linha.split('\t').collect();
+        if campos.len() < 4 { continue; }
+        let urls: Vec<String> = campos[3].split(',').filter_map(montar).collect();
+        if urls.is_empty() { continue; }
+        episodios.push(Episodio {
+            temporada: campos[0].parse().unwrap_or(0),
+            numero: campos[1].parse().unwrap_or(0),
+            versao: campos[2].to_string(), urls,
+        });
+    }
+    concluir(&mut identidade, &mut episodios, &mut saida);
+    saida
 }
 
 /// Episódios de uma série: baixa só o pedaço em que ela está.

@@ -406,7 +406,12 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
             ui.add_space(10.0);
             ui.label(egui::RichText::new("Acervo").font(forte(11.0)).color(SECUNDARIO));
             ui.add_space(2.0);
-            let mut secoes: Vec<(Aba, Icone, &str)> = vec![(Aba::Filmes, Icone::Filmes, "Filmes"), (Aba::Series, Icone::Series, "Séries")];
+            let mut secoes: Vec<(Aba, Icone, &str)> = vec![
+                (Aba::Filmes, Icone::Filmes, "Filmes"),
+                (Aba::Series, Icone::Series, "Séries"),
+                (Aba::Animes, Icone::Series, "Animes"),
+                (Aba::Doramas, Icone::Series, "Doramas"),
+            ];
             if !app.favoritos_vod.is_empty() {
                 secoes.push((Aba::Favoritos, Icone::Estrela, "Favoritos"));
             }
@@ -1160,6 +1165,8 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
             let titulo = match app.aba {
                 Aba::Filmes => "Filmes",
                 Aba::Series => "Séries",
+                Aba::Animes => "Animes",
+                Aba::Doramas => "Doramas",
                 Aba::Favoritos => "Favoritos",
                 Aba::Extras => "Extras",
                 Aba::Canais => "",
@@ -1173,7 +1180,7 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 ui.label(egui::RichText::new(titulo).font(forte(22.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_max_width(320.0);
-                    let dica = if app.aba == Aba::Series { "Buscar série" } else { "Buscar filme" };
+                    let dica = if matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas) { "Buscar série" } else { "Buscar filme" };
                     if campo_de_busca(ui, &mut app.busca_vod, dica, "busca-acervo").changed() {
                         app.foco_vod = 0;
                     }
@@ -1185,11 +1192,12 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
             ui.add_space(10.0);
 
             // Letras.
-            let letras: Vec<(String, usize)> = app
+            let colecao = matches!(app.aba, Aba::Animes | Aba::Doramas);
+            let letras: Vec<(String, usize)> = if colecao { Vec::new() } else { app
                 .gavetas
                 .iter()
                 .map(|g| (g.letra.clone(), if app.aba == Aba::Series { g.series } else { g.filmes }))
-                .collect();
+                .collect() };
             let mut escolhida = None;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
@@ -1237,12 +1245,12 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
 /// A letra aberta não tem o título procurado: procura no acervo inteiro.
 /// Devolve verdadeiro quando já desenhou os resultados.
 fn busca_no_acervo(app: &mut App, ui: &mut egui::Ui) -> bool {
-    let na_letra = if app.aba == Aba::Series { app.series_na_tela().len() } else { app.filmes_na_tela().len() };
+    let na_letra = if matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas) { app.series_na_tela().len() } else { app.filmes_na_tela().len() };
     if na_letra > 0 {
         return false;
     }
     let busca = crate::catalogo::chave_de_ordem(app.busca_vod.trim());
-    let serie = app.aba == Aba::Series;
+    let serie = matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas);
     let achados: Vec<vod::Achado> = app
         .acervo
         .iter()
@@ -1317,7 +1325,7 @@ fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
 
 /// A grade de capas, só com as linhas à vista.
 fn grade(app: &mut App, ui: &mut egui::Ui) {
-    let serie = app.aba == Aba::Series;
+    let serie = matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas);
     let filmes = if serie { Vec::new() } else { app.filmes_na_tela() };
     let series = if serie { app.series_na_tela() } else { Vec::new() };
     let total = if serie { series.len() } else { filmes.len() };

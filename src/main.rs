@@ -59,6 +59,7 @@ enum Recado {
     Gavetas(Vec<vod::Gaveta>),
     Filmes(String, Vec<vod::Filme>),
     Series(String, Vec<vod::Serie>),
+    Colecao(Aba, Vec<(vod::Serie, Vec<vod::Episodio>)>),
     Episodios(String, Vec<vod::Episodio>),
     Acervo(Vec<vod::Achado>),
     /// Uma capa achada no TMDB: só serve para redesenhar a lista.
@@ -72,6 +73,8 @@ pub enum Aba {
     Canais,
     Filmes,
     Series,
+    Animes,
+    Doramas,
     Favoritos,
     Extras,
 }
@@ -131,6 +134,7 @@ struct App {
     series: Vec<vod::Serie>,
     serie_aberta: Option<vod::Serie>,
     episodios: Vec<vod::Episodio>,
+    episodios_colecao: HashMap<String, Vec<vod::Episodio>>,
     carregando_vod: bool,
     /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
     acervo: Vec<vod::Achado>,
@@ -238,6 +242,7 @@ impl App {
             series: Vec::new(),
             serie_aberta: None,
             episodios: Vec::new(),
+            episodios_colecao: HashMap::new(),
             carregando_vod: false,
             acervo: Vec::new(),
             favoritos_vod: ler_lista("favoritos-vod.txt"),
@@ -356,6 +361,11 @@ impl App {
     fn abrir_serie(&mut self, serie: vod::Serie) {
         self.serie_aberta = Some(serie.clone());
         self.episodios.clear();
+        if let Some(lista) = self.episodios_colecao.get(&serie.titulo).cloned() {
+            self.episodios = lista;
+            self.carregando_vod = false;
+            return;
+        }
         self.carregando_vod = true;
         let emissor = self.emissor.clone();
         let letra = self.letra.clone();
@@ -643,6 +653,15 @@ impl App {
                         self.carregando_vod = false;
                     }
                 }
+                Recado::Colecao(aba, lista) => {
+                    if self.aba == aba {
+                        self.episodios_colecao = lista.iter()
+                            .map(|(serie, episodios)| (serie.titulo.clone(), episodios.clone()))
+                            .collect();
+                        self.series = lista.into_iter().map(|(serie, _)| serie).collect();
+                        self.carregando_vod = false;
+                    }
+                }
                 Recado::Episodios(serie, lista) => {
                     if self.serie_aberta.as_ref().map(|s| s.titulo == serie).unwrap_or(false) {
                         self.episodios = lista;
@@ -781,6 +800,8 @@ impl App {
                     let proxima = match self.aba {
                         Aba::Canais => Aba::Filmes,
                         Aba::Filmes => Aba::Series,
+                        Aba::Series => Aba::Animes,
+                        Aba::Animes => Aba::Doramas,
                         _ => Aba::Canais,
                     };
                     self.abrir_secao(proxima);
@@ -895,7 +916,7 @@ impl App {
     fn itens_do_acervo(&self) -> usize {
         if self.serie_aberta.is_some() {
             self.episodios.len()
-        } else if self.aba == Aba::Series {
+        } else if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
             self.series_na_tela().len()
         } else {
             self.filmes_na_tela().len()
@@ -903,7 +924,7 @@ impl App {
     }
 
     fn titulo_em_foco(&self) -> Option<String> {
-        if self.aba == Aba::Series {
+        if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
             self.series_na_tela().get(self.foco_vod).map(|s| s.titulo.clone())
         } else {
             self.filmes_na_tela().get(self.foco_vod).map(|f| f.titulo.clone())
@@ -918,7 +939,7 @@ impl App {
             self.tocar_vod(titulo, episodio.urls, 0, true);
             return;
         }
-        if self.aba == Aba::Series {
+        if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
             if let Some(serie) = self.series_na_tela().get(self.foco_vod).cloned() {
                 self.foco_vod = 0;
                 self.abrir_serie(serie);
@@ -1033,6 +1054,17 @@ impl App {
         self.busca_vod.clear();
         self.foco_vod = 0;
         self.serie_aberta = None;
+        if matches!(aba, Aba::Animes | Aba::Doramas) {
+            self.series.clear();
+            self.episodios_colecao.clear();
+            self.carregando_vod = true;
+            let emissor = self.emissor.clone();
+            std::thread::spawn(move || {
+                let tipo = if aba == Aba::Animes { "animes" } else { "doramas" };
+                let _ = emissor.send(Recado::Colecao(aba, vod::colecao(tipo)));
+            });
+            return;
+        }
         if aba != Aba::Canais && self.filmes.is_empty() && self.series.is_empty() {
             let letra = self.letra.clone();
             self.letra.clear();
