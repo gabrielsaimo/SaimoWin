@@ -103,8 +103,16 @@ pub struct Mpv {
     simbolos: Arc<Simbolos>,
     handle: Arc<Ponteiro>,
     render: Mutex<Option<Render>>,
+    erro_render: Mutex<Option<String>>,
     avisos: Receiver<Aviso>,
     _emissor: Sender<Aviso>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Faixa {
+    pub id: String,
+    pub titulo: String,
+    pub selecionada: bool,
 }
 
 // Ponteiros só são tocados por estes métodos, todos sincronizados pelo próprio
@@ -178,7 +186,12 @@ impl Mpv {
         let opcoes = [
             // Sem janela própria: quem desenha é a API de render.
             ("vo", "libmpv"),
-            ("hwdec", "auto-safe"),
+            // A API de render usa OpenGL/WGL. No Windows, decodificação
+            // direta por D3D11 exige ANGLE; alguns drivers aceitam a faixa mas
+            // entregam somente quadros pretos. O modo copy continua usando a
+            // GPU para decodificar e traz o quadro para a memória antes de
+            // desenhá-lo, funcionando também nesses aparelhos.
+            ("hwdec", "auto-copy-safe"),
             // Ao vivo: perder quadro é melhor que atrasar a imagem.
             ("profile", "low-latency"),
             ("cache", "yes"),
@@ -232,7 +245,14 @@ impl Mpv {
             });
         }
 
-        Ok(Mpv { simbolos, handle, render: Mutex::new(None), avisos, _emissor: emissor })
+        Ok(Mpv {
+            simbolos,
+            handle,
+            render: Mutex::new(None),
+            erro_render: Mutex::new(None),
+            avisos,
+            _emissor: emissor,
+        })
     }
 
     /// Liga o mpv ao contexto OpenGL da janela. Só pode ser chamado na thread
@@ -260,10 +280,17 @@ impl Mpv {
             (self.simbolos.render_context_create)(&mut contexto, self.handle.0, params.as_mut_ptr())
         };
         if erro < 0 || contexto.is_null() {
-            return Err(format!("mpv_render_context_create falhou ({erro})"));
+            let mensagem = format!("mpv_render_context_create falhou ({erro})");
+            *self.erro_render.lock().unwrap() = Some(mensagem.clone());
+            return Err(mensagem);
         }
+        *self.erro_render.lock().unwrap() = None;
         *render = Some(Render(contexto));
         Ok(())
+    }
+
+    pub fn erro_de_video(&self) -> Option<String> {
+        self.erro_render.lock().unwrap().clone()
     }
 
     /// Desenha o quadro atual no framebuffer que já está ligado.
@@ -285,7 +312,45 @@ impl Mpv {
     pub fn tocar(&self, url: &str, referer: Option<&str>, agente: Option<&str>) {
         self.propriedade("referrer", referer.unwrap_or(""));
         self.propriedade("user-agent", agente.unwrap_or(crate::AGENTE));
-        self.comando(&["loadfile", url, "replace"]);
+        // Alguns masters HLS são servidos como text/plain e terminam em .txt.
+        // Sem a opção por arquivo o FFmpeg os detecta como terminal ANSI e o
+        // MPV nunca chega às variantes, áudios ou legendas.
+        if url.split('?').next().unwrap_or(url).to_ascii_lowercase().ends_with(".txt") {
+            self.comando(&["loadfile", url, "replace", "-1", "demuxer-lavf-format=hls"]);
+        } else {
+            self.comando(&["loadfile", url, "replace"]);
+        }
+    }
+
+    /// Faixas que o MPV encontrou no master (variantes de vídeo, idiomas e
+    /// legendas). Os nomes vêm do próprio manifesto quando existem.
+    pub fn faixas(&self, tipo: &str) -> Vec<Faixa> {
+        let total = self.ler("track-list/count").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        (0..total).filter_map(|i| {
+            if self.ler(&format!("track-list/{i}/type")).as_deref() != Some(tipo) { return None; }
+            let id = self.ler(&format!("track-list/{i}/id"))?;
+            let idioma = self.ler(&format!("track-list/{i}/lang")).unwrap_or_default();
+            let nome = self.ler(&format!("track-list/{i}/title")).unwrap_or_default();
+            let altura = self.ler(&format!("track-list/{i}/demux-h")).unwrap_or_default();
+            let titulo = if tipo == "video" && !altura.is_empty() && altura != "0" {
+                format!("{altura}p")
+            } else if !nome.is_empty() && !idioma.is_empty() {
+                format!("{nome} · {idioma}")
+            } else if !nome.is_empty() {
+                nome
+            } else if !idioma.is_empty() {
+                idioma
+            } else {
+                format!("Faixa {id}")
+            };
+            let selecionada = self.ler(&format!("track-list/{i}/selected")).as_deref() == Some("yes");
+            Some(Faixa { id, titulo, selecionada })
+        }).collect()
+    }
+
+    pub fn escolher_faixa(&self, tipo: &str, id: Option<&str>) {
+        let propriedade = match tipo { "video" => "vid", "audio" => "aid", "sub" => "sid", _ => return };
+        self.propriedade(propriedade, id.unwrap_or(if tipo == "sub" { "no" } else { "auto" }));
     }
 
     /// Pula para um ponto do arquivo (em segundos).

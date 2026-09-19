@@ -661,6 +661,24 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                 return;
             }
 
+            if let Some(erro) = app.mpv.as_ref().and_then(|mpv| mpv.erro_de_video()) {
+                ui.painter().text(
+                    area.center() - egui::vec2(0.0, 12.0),
+                    Align2::CENTER_CENTER,
+                    "Não foi possível iniciar o vídeo",
+                    forte(20.0),
+                    TEXTO,
+                );
+                ui.painter().text(
+                    area.center() + egui::vec2(0.0, 18.0),
+                    Align2::CENTER_CENTER,
+                    erro,
+                    normal(12.0),
+                    SECUNDARIO,
+                );
+                return;
+            }
+
             if app.tocando.is_none() && app.tocando_vod.is_none() {
                 estado_vazio(app, ui, area);
                 return;
@@ -912,10 +930,59 @@ fn barra_de_controles(app: &mut App, ui: &mut egui::Ui) {
                     if filme {
                         menu_de_velocidade(app, ui);
                     }
+                    menu_de_faixas(app, ui);
                     menu_de_fontes(app, ui);
                 });
             });
         });
+}
+
+fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
+    let Some(mpv) = app.mpv.clone() else { return };
+    let videos = mpv.faixas("video");
+    let audios = mpv.faixas("audio");
+    let legendas = mpv.faixas("sub");
+    if videos.is_empty() && audios.is_empty() && legendas.is_empty() { return; }
+
+    ui.menu_button(
+        egui::RichText::new("A/V").font(forte(11.0)),
+        |ui| {
+            ui.set_min_width(190.0);
+            ui.label(egui::RichText::new("Qualidade").font(forte(11.0)).color(SECUNDARIO));
+            if ui.selectable_label(!videos.iter().any(|f| f.selecionada), "Automática").clicked() {
+                mpv.escolher_faixa("video", None); ui.close_menu();
+            }
+            for faixa in &videos {
+                if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
+                    mpv.escolher_faixa("video", Some(&faixa.id)); ui.close_menu();
+                }
+            }
+
+            if !audios.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Idioma do áudio").font(forte(11.0)).color(SECUNDARIO));
+                for faixa in &audios {
+                    if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
+                        mpv.escolher_faixa("audio", Some(&faixa.id)); ui.close_menu();
+                    }
+                }
+            }
+
+            if !legendas.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Legendas").font(forte(11.0)).color(SECUNDARIO));
+                let ligada = legendas.iter().any(|f| f.selecionada);
+                if ui.selectable_label(!ligada, "Desligadas").clicked() {
+                    mpv.escolher_faixa("sub", None); ui.close_menu();
+                }
+                for faixa in &legendas {
+                    if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
+                        mpv.escolher_faixa("sub", Some(&faixa.id)); ui.close_menu();
+                    }
+                }
+            }
+        },
+    ).response.on_hover_text("Qualidade, idioma do áudio e legendas");
 }
 
 fn selo(ui: &mut egui::Ui, texto: &str, ponto: Option<Color32>, dica: &str) {
