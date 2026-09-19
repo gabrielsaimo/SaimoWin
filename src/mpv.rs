@@ -127,23 +127,40 @@ extern "C" fn endereco_gl(_ctx: *mut c_void, nome: *const c_char) -> *mut c_void
     unsafe {
         extern "system" {
             fn wglGetProcAddress(name: *const c_char) -> *mut c_void;
-            fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
+            fn LoadLibraryA(name: *const c_char) -> *mut c_void;
             fn GetProcAddress(modulo: *mut c_void, name: *const c_char) -> *mut c_void;
         }
+        // O wglGetProcAddress não devolve só nulo quando não acha: a própria
+        // documentação da Microsoft lista 1, 2, 3 e -1 como valores de falha.
+        // O -1 passava pela conferência antiga e ia para o mpv como endereço
+        // bom — e o mpv o chamava. Toda função do OpenGL 1.1 (glClear,
+        // glViewport, glGetString) cai nesse caso em boa parte dos drivers.
+        let falhou = |p: *mut c_void| {
+            let valor = p as usize;
+            p.is_null() || valor <= 3 || valor == usize::MAX
+        };
         let achado = wglGetProcAddress(nome);
-        if !achado.is_null() && achado as usize > 3 {
+        if !falhou(achado) {
             return achado;
         }
-        let opengl32 = GetModuleHandleA(b"opengl32.dll\0".as_ptr() as *const c_char);
+        // LoadLibraryA e não GetModuleHandleA: se a opengl32 ainda não estiver
+        // carregada no processo, o handle viria nulo e ficaria sem nada.
+        let opengl32 = LoadLibraryA(b"opengl32.dll\0".as_ptr() as *const c_char);
         if opengl32.is_null() {
             return std::ptr::null_mut();
         }
         GetProcAddress(opengl32, nome)
     }
+    // Fora do Windows o endereço sai do próprio processo: o OpenGL já está
+    // carregado pela janela, e é assim que dá para rodar este mesmo caminho
+    // aqui no Mac para conferir o desenho sem depender de uma máquina Windows.
     #[cfg(not(windows))]
-    {
-        let _ = nome;
-        std::ptr::null_mut()
+    unsafe {
+        extern "C" {
+            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        }
+        const RTLD_DEFAULT: *mut c_void = std::ptr::null_mut();
+        dlsym(RTLD_DEFAULT, nome)
     }
 }
 

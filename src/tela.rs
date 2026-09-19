@@ -348,31 +348,80 @@ fn campo_de_busca(ui: &mut egui::Ui, texto: &mut String, dica: &str, id: &str) -
 
 // MARK: - Vídeo
 
+/// O vídeo, no fundo de tudo.
+///
+/// Era aqui a tela preta do Windows. O vídeo morava numa `Area` de ordem
+/// `Background`, na crença de que isso o deixaria embaixo de tudo — mas os
+/// painéis (`SidePanel`, `CentralPanel`) desenham nessa mesma ordem, e entre
+/// camadas de mesma ordem o egui põe por último a que foi criada por último.
+/// A `Area` do vídeo nascia a cada quadro, então ia parar em cima: o retângulo
+/// preto que ela pinta antes do quadro cobria a interface inteira.
+///
+/// Só acontecia onde o mpv carrega — sem ele esta função sai na primeira
+/// linha, nada é pintado por cima e a tela aparece. Por isso o defeito parecia
+/// vir do vídeo, e mexer na decodificação nunca resolveu.
+///
+/// A correção é pintar no próprio fundo dos painéis, antes deles. Dentro de
+/// uma camada vale a ordem de inserção, e `video` é a primeira coisa que
+/// `desenhar` chama — o quadro fica embaixo, e a interface por cima.
 fn video(app: &mut App, ctx: &egui::Context) {
     let Some(mpv) = app.mpv.clone() else { return };
-    // Camada de fundo: tudo o mais se desenha por cima.
-    egui::Area::new(egui::Id::new("video"))
-        .order(egui::Order::Background)
-        .fixed_pos(Pos2::ZERO)
-        .show(ctx, |ui| {
-            let rect = ctx.screen_rect();
-            ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
-            ui.allocate_rect(rect, Sense::hover());
-            let callback = egui::PaintCallback {
-                rect,
-                callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |info, pintor| {
-                    if let Err(erro) = mpv.ligar_video() {
-                        crate::telemetria::erro(erro);
-                        return;
-                    }
-                    let gl = pintor.gl();
-                    let fbo = unsafe { gl.get_parameter_i32(eframe::glow::DRAW_FRAMEBUFFER_BINDING) };
-                    let [largura, altura] = info.screen_size_px;
-                    mpv.desenhar(fbo, largura as i32, altura as i32);
-                })),
-            };
-            ui.painter().add(callback);
-        });
+    let rect = ctx.screen_rect();
+    let pintor = ctx.layer_painter(egui::LayerId::background());
+    pintor.rect_filled(rect, 0.0, Color32::BLACK);
+    pintor.add(egui::PaintCallback {
+        rect,
+        callback: Arc::new(eframe::egui_glow::CallbackFn::new(move |info, pintor| {
+            if let Err(erro) = mpv.ligar_video() {
+                crate::telemetria::erro(erro);
+                return;
+            }
+            let gl = pintor.gl();
+            let fbo = unsafe { gl.get_parameter_i32(eframe::glow::DRAW_FRAMEBUFFER_BINDING) };
+            let [largura, altura] = info.screen_size_px;
+            unsafe { estado_padrao_de_opengl(gl) };
+            mpv.desenhar(fbo, largura as i32, altura as i32);
+        })),
+    });
+}
+
+/// Devolve o OpenGL ao estado padrão antes de entregar o quadro ao mpv.
+///
+/// A documentação do mpv é explícita: `mpv_render_context_render` exige o
+/// contexto "reasonably set to OpenGL standard defaults", e cita
+/// `GL_SCISSOR_TEST` e `GL_BLEND` nos valores de fábrica — desligados.
+///
+/// O egui chama o callback com o oposto disso, porque é assim que ele desenha
+/// a própria interface: teste de tesoura ligado, caixa de recorte posta e
+/// mistura ligada. Medido aqui, o mpv recebia `SCISSOR_TEST=1 BLEND=1`. Ele
+/// não desliga nada — confia no que a documentação pede — e desenha o quadro
+/// em várias passagens, cada uma num alvo próprio, limpando-as com `glClear`,
+/// que obedece à tesoura. O que sai daí depende da placa e do tamanho do
+/// vídeo: imagem recortada, cor lavada pela mistura, ou nada.
+///
+/// Não era esta a causa da tela preta — essa era a camada, acima — mas é um
+/// contrato quebrado que estragaria o quadro assim que ele voltasse a
+/// aparecer.
+///
+/// Depois do callback o egui refaz o estado dele sozinho
+/// (`prepare_painting`), e a caixa de recorte volta a cada primitiva, então
+/// não há o que restaurar aqui.
+unsafe fn estado_padrao_de_opengl(gl: &eframe::glow::Context) {
+    gl.disable(eframe::glow::SCISSOR_TEST);
+    gl.disable(eframe::glow::BLEND);
+    gl.disable(eframe::glow::CULL_FACE);
+    gl.disable(eframe::glow::DEPTH_TEST);
+    gl.disable(eframe::glow::STENCIL_TEST);
+    gl.color_mask(true, true, true, true);
+    gl.depth_mask(true);
+    gl.stencil_mask(0xFF);
+    // O egui deixa o programa e o VAO dele ligados; o padrão é nenhum.
+    gl.use_program(None);
+    gl.bind_vertex_array(None);
+    gl.bind_buffer(eframe::glow::ARRAY_BUFFER, None);
+    gl.bind_buffer(eframe::glow::ELEMENT_ARRAY_BUFFER, None);
+    gl.active_texture(eframe::glow::TEXTURE0);
+    gl.bind_texture(eframe::glow::TEXTURE_2D, None);
 }
 
 // MARK: - Barra lateral
