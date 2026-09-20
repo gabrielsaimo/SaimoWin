@@ -1264,6 +1264,18 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 }
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(titulo).font(forte(22.0)));
+                ui.add_space(14.0);
+                // As seções ao lado da busca, e não só na lateral: são as duas
+                // coisas que alguém quer enquanto procura, e ficam juntas.
+                let mut escolhida_secao = None;
+                for (aba, nome) in secoes_do_acervo(app) {
+                    if pilula(ui, None, nome, app.aba == aba).clicked() {
+                        escolhida_secao = Some(aba);
+                    }
+                }
+                if let Some(aba) = escolhida_secao {
+                    app.abrir_secao(aba);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_max_width(320.0);
                     let dica = if matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas) { "Buscar série" } else { "Buscar filme" };
@@ -1412,6 +1424,27 @@ fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
         app.busca_vod = nome;
     }
     ui.add_space(12.0);
+}
+
+/// As seções que aparecem no alto do acervo e na lateral.
+///
+/// Extras só entra com o código digitado, e Favoritos só quando há algum: uma
+/// seção vazia é um beco.
+fn secoes_do_acervo(app: &App) -> Vec<(Aba, &'static str)> {
+    let mut out = vec![
+        (Aba::Inicio, "Início"),
+        (Aba::Filmes, "Filmes"),
+        (Aba::Series, "Séries"),
+        (Aba::Animes, "Animes"),
+        (Aba::Doramas, "Doramas"),
+    ];
+    if !app.favoritos_vod.is_empty() {
+        out.push((Aba::Favoritos, "Favoritos"));
+    }
+    if app.liberado {
+        out.push((Aba::Extras, "Extras"));
+    }
+    out
 }
 
 /// A primeira tela do acervo: fileiras de capa que correm para o lado.
