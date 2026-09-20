@@ -1120,6 +1120,12 @@ fn menu_de_fontes(app: &mut App, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Fontes").font(forte(11.0)).color(SECUNDARIO));
         for i in 0..total {
             let rotulo = if i == atual { format!("✓ Fonte {}", i + 1) } else { format!("   Fonte {}", i + 1) };
+            let qualidade = app.tocando.as_ref()
+                .and_then(|t| app.canais.get(t.canal))
+                .and_then(|c| c.fontes.get(i))
+                .and_then(|f| f.qualidade.as_deref())
+                .unwrap_or("Qualidade não informada");
+            let rotulo = format!("{rotulo} · {qualidade}");
             if ui.selectable_label(i == atual, rotulo).clicked() {
                 app.escolher_fonte(i);
             }
