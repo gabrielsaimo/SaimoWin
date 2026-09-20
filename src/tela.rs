@@ -456,6 +456,7 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
             ui.label(egui::RichText::new("Acervo").font(forte(11.0)).color(SECUNDARIO));
             ui.add_space(2.0);
             let mut secoes: Vec<(Aba, Icone, &str)> = vec![
+                (Aba::Inicio, Icone::Preencher, "Início"),
                 (Aba::Filmes, Icone::Filmes, "Filmes"),
                 (Aba::Series, Icone::Series, "Séries"),
                 (Aba::Animes, Icone::Series, "Animes"),
@@ -1241,6 +1242,7 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
         .frame(egui::Frame::none().fill(Color32::from_rgb(20, 20, 22)).inner_margin(egui::Margin::symmetric(24.0, 16.0)))
         .show(ctx, |ui| {
             let titulo = match app.aba {
+                Aba::Inicio => "Início",
                 Aba::Filmes => "Filmes",
                 Aba::Series => "Séries",
                 Aba::Animes => "Animes",
@@ -1268,6 +1270,11 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 return;
             }
             ui.add_space(10.0);
+
+            if app.aba == Aba::Inicio {
+                fileiras(app, ui);
+                return;
+            }
 
             // Letras.
             let colecao = matches!(app.aba, Aba::Animes | Aba::Doramas);
@@ -1399,6 +1406,227 @@ fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
         app.busca_vod = nome;
     }
     ui.add_space(12.0);
+}
+
+/// A primeira tela do acervo: fileiras de capa que correm para o lado.
+///
+/// Grade alfabética serve para achar o que já se sabe que existe; não serve
+/// para descobrir. As fileiras mostram o que há — o que estava sendo
+/// assistido, o que foi marcado, o que está em alta — e a busca continua no
+/// mesmo lugar, filtrando dentro delas.
+///
+/// As capas dos destaques já vêm anotadas quando a lista chega (ver
+/// `capas::anotar`), então desenhar esta tela não dispara busca nenhuma ao
+/// TMDB. Só "continuar assistindo" e favoritos procuram capa, e são poucos.
+fn fileiras(app: &mut App, ui: &mut egui::Ui) {
+    let visiveis = filas_na_tela(app);
+    if visiveis.is_empty() {
+        let texto = if app.carregando_vod { "Carregando…" } else { "Nada aqui" };
+        ui.label(egui::RichText::new(texto).color(SECUNDARIO));
+        return;
+    }
+
+    let largura = 132.0;
+    let altura = 238.0;
+    let espaco = 14.0;
+    app.foco_fila = app.foco_fila.min(visiveis.len() - 1);
+    let na_fileira = visiveis[app.foco_fila].1.len();
+    let foco = app.foco_vod.min(na_fileira.saturating_sub(1));
+    let andou = ui.input(|i| {
+        i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowUp)
+            || i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight)
+    });
+
+    let mut escolhido: Option<(usize, usize)> = None;
+    let mut favoritar: Option<String> = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for (indice_fila, (nome, cartoes)) in visiveis.iter().enumerate() {
+            ui.label(egui::RichText::new(nome).font(forte(15.0)));
+            ui.add_space(5.0);
+            egui::ScrollArea::horizontal()
+                .id_salt(format!("fila-{indice_fila}"))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = espaco;
+                        for (indice, item) in cartoes.iter().enumerate() {
+                            let focado = indice_fila == app.foco_fila && indice == foco;
+                            let capa = app.capa(&item.titulo, item.serie);
+                            let marca = if item.serie {
+                                None
+                            } else {
+                                progresso::onde_parou(&item.titulo)
+                            };
+                            let resposta = cartao(
+                                ui, &item.rotulo, &item.detalhe, capa, item.favorito,
+                                focado, marca, largura, altura);
+                            if focado && andou {
+                                resposta.scroll_to_me(None);
+                            }
+                            if resposta.clicked() {
+                                escolhido = Some((indice_fila, indice));
+                            }
+                            if resposta.secondary_clicked() {
+                                favoritar = Some(item.titulo.clone());
+                            }
+                        }
+                    });
+                });
+            ui.add_space(espaco);
+        }
+    });
+
+    if let Some(titulo) = favoritar {
+        app.favoritar_vod(titulo);
+        return;
+    }
+    if let Some((fila, indice)) = escolhido {
+        app.foco_fila = fila;
+        app.foco_vod = indice;
+        abrir_da_fileira(app, fila, indice);
+    }
+}
+
+/// Um cartão da fileira, já com o que a tela precisa desenhar.
+struct CartaoDaFila {
+    /// O nome como está no acervo — é por ele que se acha o título.
+    titulo: String,
+    /// O que aparece embaixo da capa: na série em andamento, com o episódio.
+    rotulo: String,
+    detalhe: String,
+    serie: bool,
+    favorito: bool,
+    /// De onde este cartão veio, para saber como abri-lo.
+    origem: Origem,
+}
+
+#[derive(Clone)]
+enum Origem {
+    /// Um destaque publicado: fila e posição dentro dela.
+    Destaque(usize, usize),
+    /// Um título que estava pela metade ou marcado: só o nome.
+    PeloNome,
+}
+
+/// Quantos cartões cada fileira tem, para o teclado saber onde pode ir.
+pub fn tamanho_das_filas(app: &App) -> Vec<usize> {
+    filas_na_tela(app).iter().map(|(_, cartoes)| cartoes.len()).collect()
+}
+
+/// Abre o cartão em foco pelo teclado.
+pub fn abrir_em_foco_na_fileira(app: &mut App) {
+    let (fila, indice) = (app.foco_fila, app.foco_vod);
+    abrir_da_fileira(app, fila, indice);
+}
+
+/// As fileiras já filtradas pela busca: digitar procura dentro do que está à
+/// vista, e a fileira que ficou sem nada sai da tela.
+fn filas_na_tela(app: &App) -> Vec<(String, Vec<CartaoDaFila>)> {
+    let mut out: Vec<(String, Vec<CartaoDaFila>)> = Vec::new();
+
+    let pendentes = progresso::pendentes();
+    if !pendentes.is_empty() {
+        let cartoes = pendentes
+            .iter()
+            .take(20)
+            .map(|(titulo, _)| {
+                let nome = titulo.split(" · ").next().unwrap_or(titulo).to_string();
+                CartaoDaFila {
+                    favorito: app.favoritos_vod.iter().any(|t| *t == nome),
+                    rotulo: titulo.clone(),
+                    detalhe: String::new(),
+                    serie: titulo.contains(" · "),
+                    titulo: nome,
+                    origem: Origem::PeloNome,
+                }
+            })
+            .collect();
+        out.push(("Continue assistindo".to_string(), cartoes));
+    }
+
+    if !app.favoritos_vod.is_empty() {
+        let cartoes = app
+            .favoritos_vod
+            .iter()
+            .map(|titulo| CartaoDaFila {
+                titulo: titulo.clone(),
+                rotulo: titulo.clone(),
+                detalhe: String::new(),
+                serie: false,
+                favorito: true,
+                origem: Origem::PeloNome,
+            })
+            .collect();
+        out.push(("Favoritos".to_string(), cartoes));
+    }
+
+    for (indice_fila, fila) in app.filas.iter().enumerate() {
+        let cartoes: Vec<CartaoDaFila> = fila
+            .itens
+            .iter()
+            .enumerate()
+            .map(|(indice, item)| CartaoDaFila {
+                favorito: app.favoritos_vod.iter().any(|t| *t == item.titulo),
+                rotulo: item.titulo.clone(),
+                detalhe: if item.serie() { "Série".into() } else { "Filme".into() },
+                serie: item.serie(),
+                titulo: item.titulo.clone(),
+                origem: Origem::Destaque(indice_fila, indice),
+            })
+            .collect();
+        if !cartoes.is_empty() {
+            out.push((fila.titulo.clone(), cartoes));
+        }
+    }
+
+    let busca = app.busca_vod.trim().to_lowercase();
+    if busca.is_empty() {
+        return out;
+    }
+    out.into_iter()
+        .filter_map(|(nome, cartoes)| {
+            let filtrados: Vec<CartaoDaFila> = cartoes
+                .into_iter()
+                .filter(|c| c.titulo.to_lowercase().contains(&busca))
+                .collect();
+            if filtrados.is_empty() { None } else { Some((nome, filtrados)) }
+        })
+        .collect()
+}
+
+/// Abre o que foi escolhido na fileira.
+///
+/// Filme e série passam pelo caminho de sempre. Anime e dorama moram nas
+/// coleções: abre-se a seção deles e a busca leva ao título, que é o mesmo
+/// gesto de quem chegou lá pela lista.
+fn abrir_da_fileira(app: &mut App, fila: usize, indice: usize) {
+    let visiveis = filas_na_tela(app);
+    let Some((_, cartoes)) = visiveis.get(fila) else { return };
+    let Some(cartao) = cartoes.get(indice) else { return };
+    let titulo = cartao.titulo.clone();
+    match cartao.origem.clone() {
+        Origem::Destaque(f, i) => {
+            let Some(item) = app.filas.get(f).and_then(|fila| fila.itens.get(i)) else { return };
+            let destino = if item.da_colecao() {
+                if item.colecao() == "animes" { Aba::Animes } else { Aba::Doramas }
+            } else if item.serie() {
+                Aba::Series
+            } else {
+                Aba::Filmes
+            };
+            let letra = item.letra.clone();
+            app.abrir_secao(destino);
+            if !letra.is_empty() {
+                app.abrir_letra(letra);
+            }
+            app.busca_vod = titulo;
+            app.foco_vod = 0;
+        }
+        Origem::PeloNome => {
+            app.abrir_secao(if cartao.serie { Aba::Series } else { Aba::Filmes });
+            app.busca_vod = titulo;
+            app.foco_vod = 0;
+        }
+    }
 }
 
 /// A grade de capas, só com as linhas à vista.

@@ -69,6 +69,20 @@ pub fn conhecida(titulo: &str, serie: bool) -> Option<String> {
     memoria().as_ref()?.get(&chave(titulo, serie)).cloned()
 }
 
+/// Guarda uma capa que já veio pronta, sem procurar ninguém.
+///
+/// As fileiras da tela inicial trazem o endereço do pôster junto, resolvido no
+/// repositório. Anotando aqui, o desenho acha a capa no mesmo lugar de sempre e
+/// nenhuma busca sai para o TMDB — que é o que deixa a tela abrir na hora.
+pub fn anotar(titulo: &str, serie: bool, url: &str) {
+    if url.is_empty() {
+        return;
+    }
+    let mut guarda = memoria();
+    let mapa = guarda.get_or_insert_with(Default::default);
+    mapa.entry(chave(titulo, serie)).or_insert_with(|| url.to_string());
+}
+
 /// Procura a capa numa thread e chama `pronto` com o endereço achado.
 pub fn procurar(titulo: String, serie: bool, pronto: impl FnOnce(String) + Send + 'static) {
     {

@@ -11,6 +11,7 @@
 
 mod atualizacao;
 mod capas;
+mod destaques;
 mod catalogo;
 mod mpv;
 mod progresso;
@@ -60,6 +61,7 @@ enum Recado {
     Filmes(String, Vec<vod::Filme>),
     Series(String, Vec<vod::Serie>),
     Colecao(Aba, Vec<(vod::Serie, Vec<vod::Episodio>)>),
+    Destaques(Vec<destaques::Fila>),
     Episodios(String, Vec<vod::Episodio>),
     Acervo(Vec<vod::Achado>),
     /// Uma capa achada no TMDB: só serve para redesenhar a lista.
@@ -71,6 +73,8 @@ enum Recado {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Aba {
     Canais,
+    /// A porta de entrada do acervo: fileiras de capa, no lugar da grade.
+    Inicio,
     Filmes,
     Series,
     Animes,
@@ -135,6 +139,10 @@ struct App {
     serie_aberta: Option<vod::Serie>,
     episodios: Vec<vod::Episodio>,
     episodios_colecao: HashMap<String, Vec<vod::Episodio>>,
+    /// As fileiras publicadas, baixadas uma vez por abertura do programa.
+    filas: Vec<destaques::Fila>,
+    /// Em qual fileira o teclado está. A coluna é o `foco_vod` de sempre.
+    foco_fila: usize,
     carregando_vod: bool,
     /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
     acervo: Vec<vod::Achado>,
@@ -243,6 +251,8 @@ impl App {
             serie_aberta: None,
             episodios: Vec::new(),
             episodios_colecao: HashMap::new(),
+            filas: Vec::new(),
+            foco_fila: 0,
             carregando_vod: false,
             acervo: Vec::new(),
             favoritos_vod: ler_lista("favoritos-vod.txt"),
@@ -653,6 +663,15 @@ impl App {
                         self.carregando_vod = false;
                     }
                 }
+                Recado::Destaques(lista) => {
+                    for fila in &lista {
+                        for item in &fila.itens {
+                            capas::anotar(&item.titulo, item.serie(), &item.capa);
+                        }
+                    }
+                    self.filas = lista;
+                    self.carregando_vod = false;
+                }
                 Recado::Colecao(aba, lista) => {
                     if self.aba == aba {
                         self.episodios_colecao = lista.iter()
@@ -798,7 +817,8 @@ impl App {
                 egui::Key::PageDown => self.pular_canal(1),
                 egui::Key::Tab => {
                     let proxima = match self.aba {
-                        Aba::Canais => Aba::Filmes,
+                        Aba::Canais => Aba::Inicio,
+                        Aba::Inicio => Aba::Filmes,
                         Aba::Filmes => Aba::Series,
                         Aba::Series => Aba::Animes,
                         Aba::Animes => Aba::Doramas,
@@ -863,8 +883,51 @@ impl App {
         }
     }
 
+    /// Setas, Enter e estrela dentro das fileiras da tela inicial.
+    ///
+    /// Esquerda e direita andam dentro da fileira; cima e baixo trocam de
+    /// fileira mantendo a coluna, que é como toda TV se comporta e como a
+    /// pessoa espera depois de dois segundos mexendo.
+    fn tecla_nas_fileiras(&mut self, key: egui::Key) {
+        let tamanhos = tela::tamanho_das_filas(self);
+        if tamanhos.is_empty() {
+            return;
+        }
+        self.foco_fila = self.foco_fila.min(tamanhos.len() - 1);
+        let nesta = tamanhos[self.foco_fila];
+        match key {
+            egui::Key::ArrowRight => {
+                self.foco_vod = (self.foco_vod + 1).min(nesta.saturating_sub(1));
+            }
+            egui::Key::ArrowLeft => self.foco_vod = self.foco_vod.saturating_sub(1),
+            egui::Key::ArrowDown => {
+                if self.foco_fila + 1 < tamanhos.len() {
+                    self.foco_fila += 1;
+                    self.foco_vod = self.foco_vod.min(tamanhos[self.foco_fila].saturating_sub(1));
+                }
+            }
+            egui::Key::ArrowUp => {
+                if self.foco_fila > 0 {
+                    self.foco_fila -= 1;
+                    self.foco_vod = self.foco_vod.min(tamanhos[self.foco_fila].saturating_sub(1));
+                }
+            }
+            egui::Key::Enter => tela::abrir_em_foco_na_fileira(self),
+            egui::Key::S => {
+                if let Some(titulo) = self.titulo_em_foco() {
+                    self.favoritar_vod(titulo);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Setas, Enter e estrela dentro da grade do acervo.
     fn tecla_no_acervo(&mut self, key: egui::Key) {
+        if self.aba == Aba::Inicio {
+            self.tecla_nas_fileiras(key);
+            return;
+        }
         let colunas = self.colunas_vod.max(1);
         let total = self.itens_do_acervo();
         match key {
@@ -914,6 +977,9 @@ impl App {
     }
 
     fn itens_do_acervo(&self) -> usize {
+        if self.aba == Aba::Inicio {
+            return tela::tamanho_das_filas(self).get(self.foco_fila).copied().unwrap_or(0);
+        }
         if self.serie_aberta.is_some() {
             self.episodios.len()
         } else if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
@@ -1054,6 +1120,17 @@ impl App {
         self.busca_vod.clear();
         self.foco_vod = 0;
         self.serie_aberta = None;
+        self.foco_fila = 0;
+        if aba == Aba::Inicio {
+            if self.filas.is_empty() {
+                self.carregando_vod = true;
+                let emissor = self.emissor.clone();
+                std::thread::spawn(move || {
+                    let _ = emissor.send(Recado::Destaques(destaques::filas()));
+                });
+            }
+            return;
+        }
         if matches!(aba, Aba::Animes | Aba::Doramas) {
             self.series.clear();
             self.episodios_colecao.clear();
@@ -1160,6 +1237,7 @@ fn foto_de_teste(app: &mut App, ctx: &egui::Context) {
     let espera = std::env::var("SAIMO_FOTO_ESPERA").ok().and_then(|v| v.parse().ok()).unwrap_or(18);
     if inicio.elapsed() > Duration::from_secs(3) && inicio.elapsed() < Duration::from_secs(4) {
         match std::env::var("SAIMO_FOTO_TELA").unwrap_or_default().as_str() {
+            "inicio" => app.abrir_secao(Aba::Inicio),
             "filmes" => app.abrir_secao(Aba::Filmes),
             "series" => app.abrir_secao(Aba::Series),
             "guia" => app.guia_aberto = true,
