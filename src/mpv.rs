@@ -215,6 +215,10 @@ impl Mpv {
             ("demuxer-max-bytes", "64MiB"),
             ("network-timeout", "20"),
             ("user-agent", crate::AGENTE),
+            // Há origem que recusa quem não manda "Accept": o EmbedPlayer, dos
+            // doramas e animes novos, responde 200 com "security error" no
+            // lugar da playlist.
+            ("http-header-fields", "Accept: */*"),
             ("tls-verify", "no"),
             ("keep-open", "no"),
             ("idle", "yes"),
