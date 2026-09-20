@@ -1091,6 +1091,37 @@ impl App {
     }
 }
 
+/// Se o programa foi aberto de dentro do ZIP, sem descompactar.
+///
+/// Clicando no executável dentro da janela do compactador, o Windows copia só
+/// ele para uma pasta temporária e deixa o resto para trás — a libmpv-2.dll
+/// fica no ZIP, e o vídeo não tem como abrir. O caminho denuncia: ele passa
+/// por uma pasta que termina em ".zip", dentro do Temp do usuário.
+///
+///   C:\Users\...\AppData\Local\Temp\<código>_SaimoTV-Windows.zip\SaimoTV\
+///
+/// Vale a pena reconhecer isso em vez de só dizer que falta um arquivo: quem
+/// abriu assim não fez nada de errado, e a saída é uma frase, não uma caçada.
+pub fn aberto_de_dentro_do_zip() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Some(pasta) = exe.parent() else { return false };
+    let caminho = pasta.to_string_lossy().to_ascii_lowercase();
+    let dentro_de_zip = pasta
+        .ancestors()
+        .filter_map(|p| p.file_name())
+        .any(|nome| nome.to_string_lossy().to_ascii_lowercase().ends_with(".zip"));
+    // O Temp sozinho não basta: há quem descompacte ali de propósito.
+    dentro_de_zip || caminho.contains("\\temp\\") && caminho.contains(".zip")
+}
+
+/// A pasta de onde o programa está rodando, para mostrar no aviso.
+pub fn pasta_do_programa() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.display().to_string()))
+        .unwrap_or_default()
+}
+
 /// No Windows a biblioteca vai no pacote, ao lado do executável. No Mac (só
 /// para testar a interface antes de publicar) vale a do sistema.
 fn caminho_do_mpv() -> std::path::PathBuf {

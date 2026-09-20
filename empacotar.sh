@@ -30,9 +30,15 @@ cp "$DLL" dist/SaimoTV/
 cat > dist/SaimoTV/LEIAME.txt <<TXT
 Saimo TV para Windows $VERSAO
 
+PRIMEIRO DESCOMPACTE. Abrir o "Saimo TV.exe" direto de dentro do ZIP não
+funciona: o Windows copia só ele para uma pasta temporária e deixa a
+libmpv-2.dll para trás, e sem ela não há vídeo.
+
 Como usar
-1. Descompacte esta pasta onde quiser (por exemplo, na Área de Trabalho).
-2. Abra "Saimo TV.exe". Os dois arquivos precisam ficar juntos na mesma pasta.
+1. Botão direito no SaimoTV-Windows.zip e "Extrair tudo" — onde quiser, por
+   exemplo na Área de Trabalho.
+2. Abra a pasta extraída e clique em "Saimo TV.exe". Os dois arquivos precisam
+   ficar juntos na mesma pasta.
 
 O que tem
   Canais ao vivo com guia de programação, e o acervo de filmes e séries com

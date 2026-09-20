@@ -698,19 +698,48 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                 app.tocando = Some(crate::Tocando { canal: 1, fonte: 0, desde: std::time::Instant::now(), confirmado: true });
             }
             if app.mpv.is_none() && !demo {
-                ui.painter().text(area.center() - egui::vec2(0.0, 12.0), Align2::CENTER_CENTER, "Falta o mpv", forte(20.0), TEXTO);
+                // Aberto de dentro do ZIP é o caso comum, e tem saída simples:
+                // dizer isso é mais útil que anunciar que falta um arquivo que
+                // a pessoa nem sabia que existia.
+                let do_zip = crate::aberto_de_dentro_do_zip();
+                let (titulo, recado) = if do_zip {
+                    (
+                        "Descompacte a pasta antes de abrir",
+                        "O Windows copiou só o programa para uma pasta temporária e deixou a \
+                         libmpv-2.dll para trás. Clique com o botão direito no arquivo \
+                         SaimoTV-Windows.zip, escolha \"Extrair tudo\" e abra o Saimo TV.exe \
+                         de dentro da pasta extraída.",
+                    )
+                } else {
+                    (
+                        "Falta o mpv",
+                        "O arquivo libmpv-2.dll precisa estar na mesma pasta do Saimo TV.exe.",
+                    )
+                };
+
                 ui.painter().text(
-                    area.center() + egui::vec2(0.0, 14.0),
+                    area.center() - egui::vec2(0.0, 44.0),
                     Align2::CENTER_CENTER,
-                    "O arquivo libmpv-2.dll precisa estar na mesma pasta do Saimo TV.exe.",
-                    normal(13.0),
-                    SECUNDARIO,
+                    titulo,
+                    forte(20.0),
+                    TEXTO,
                 );
-                if let Some(erro) = &app.erro_do_mpv {
-                    let mut job = egui::text::LayoutJob::simple(erro.clone(), normal(11.0), TERCIARIO, 520.0);
+                let mut job = egui::text::LayoutJob::simple(recado.to_string(), normal(13.0), SECUNDARIO, 560.0);
+                job.halign = egui::Align::Center;
+                let galeria = ui.fonts(|f| f.layout_job(job));
+                ui.painter().galley(area.center() - egui::vec2(0.0, 18.0), galeria, SECUNDARIO);
+
+                let pasta = crate::pasta_do_programa();
+                let detalhe = if do_zip && !pasta.is_empty() {
+                    format!("abriu daqui: {pasta}")
+                } else {
+                    app.erro_do_mpv.clone().unwrap_or_default()
+                };
+                if !detalhe.is_empty() {
+                    let mut job = egui::text::LayoutJob::simple(detalhe, normal(11.0), TERCIARIO, 560.0);
                     job.halign = egui::Align::Center;
                     let galeria = ui.fonts(|f| f.layout_job(job));
-                    ui.painter().galley(area.center() + egui::vec2(0.0, 40.0), galeria, TERCIARIO);
+                    ui.painter().galley(area.center() + egui::vec2(0.0, 46.0), galeria, TERCIARIO);
                 }
                 return;
             }
