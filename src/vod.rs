@@ -120,6 +120,12 @@ fn gaveta_do_arquivo(letra: &str) -> String {
 
 /// O arquivo, do disco quando já foi baixado: o acervo muda de vez em quando e
 /// nunca no meio de uma navegação.
+/// O mesmo arquivo publicado que o resto do catálogo usa, para quem está fora
+/// deste módulo — a lista de gêneros, por exemplo.
+pub fn arquivo_publico(nome: &str) -> Option<String> {
+    arquivo(nome)
+}
+
 fn arquivo(nome: &str) -> Option<String> {
     let local = pasta().join(nome.replace("%23", "hash"));
     if let Ok(texto) = std::fs::read_to_string(&local) {

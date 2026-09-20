@@ -1314,6 +1314,30 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 app.busca_vod.clear();
                 app.abrir_letra(letra);
             }
+            // A régua de gêneros, logo abaixo das letras. Só existe depois
+            // que o arquivo publicado chega: oferecer um filtro que devolve
+            // vazio é pior que não oferecer.
+            if !app.generos.todos.is_empty() {
+                ui.add_space(6.0);
+                let mut escolhido: Option<String> = None;
+                egui::ScrollArea::horizontal().id_salt("generos").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                        if pilula(ui, None, "Todos", app.genero.is_empty()).clicked() {
+                            escolhido = Some(String::new());
+                        }
+                        for nome in app.generos.todos.clone() {
+                            if pilula(ui, None, &nome, app.genero == nome).clicked() {
+                                escolhido = Some(if app.genero == nome { String::new() } else { nome });
+                            }
+                        }
+                    });
+                });
+                if let Some(novo) = escolhido {
+                    app.genero = novo;
+                    app.foco_vod = 0;
+                }
+            }
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new("Setas escolhem · Enter abre · S favorita · botão direito também favorita · Esc volta ao vídeo")

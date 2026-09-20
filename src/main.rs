@@ -12,6 +12,8 @@
 mod atualizacao;
 mod capas;
 mod destaques;
+mod generos;
+use generos::sem_ano;
 mod catalogo;
 mod mpv;
 mod progresso;
@@ -62,6 +64,7 @@ enum Recado {
     Series(String, Vec<vod::Serie>),
     Colecao(Aba, Vec<(vod::Serie, Vec<vod::Episodio>)>),
     Destaques(Vec<destaques::Fila>),
+    Generos(generos::Generos),
     Episodios(String, Vec<vod::Episodio>),
     Acervo(Vec<vod::Achado>),
     /// Uma capa achada no TMDB: só serve para redesenhar a lista.
@@ -141,6 +144,9 @@ struct App {
     episodios_colecao: HashMap<String, Vec<vod::Episodio>>,
     /// As fileiras publicadas, baixadas uma vez por abertura do programa.
     filas: Vec<destaques::Fila>,
+    /// Os gêneros publicados, e o escolhido na régua (vazio = todos).
+    generos: generos::Generos,
+    genero: String,
     /// Em qual fileira o teclado está. A coluna é o `foco_vod` de sempre.
     foco_fila: usize,
     carregando_vod: bool,
@@ -215,6 +221,12 @@ impl App {
                 if !acervo.is_empty() {
                     let _ = emissor.send(Recado::Acervo(acervo));
                 }
+                // Os gêneros vêm do mesmo lugar, e só servem para a régua do
+                // acervo: podem chegar depois de tudo.
+                let lidos = generos::baixar();
+                if !lidos.vazio() {
+                    let _ = emissor.send(Recado::Generos(lidos));
+                }
             });
         }
 
@@ -252,6 +264,8 @@ impl App {
             episodios: Vec::new(),
             episodios_colecao: HashMap::new(),
             filas: Vec::new(),
+            generos: generos::Generos::default(),
+            genero: String::new(),
             foco_fila: 0,
             carregando_vod: false,
             acervo: Vec::new(),
@@ -663,6 +677,9 @@ impl App {
                         self.carregando_vod = false;
                     }
                 }
+                Recado::Generos(lidos) => {
+                    self.generos = lidos;
+                }
                 Recado::Destaques(lista) => {
                     for fila in &lista {
                         for item in &fila.itens {
@@ -953,6 +970,9 @@ impl App {
 
     /// Filmes da seção aberta, já filtrados pela busca e pela seção.
     pub fn filmes_na_tela(&self) -> Vec<vod::Filme> {
+        // A lista de gêneros guarda o título como o acervo o escreve, sem o
+        // ano que às vezes vem colado no nome.
+
         let busca = catalogo::chave_de_ordem(self.busca_vod.trim());
         self.filmes
             .iter()
@@ -962,6 +982,7 @@ impl App {
                 _ => !f.reservado || self.liberado,
             })
             .filter(|f| busca.is_empty() || catalogo::chave_de_ordem(&f.titulo).contains(&busca))
+            .filter(|f| self.generos.tem(&sem_ano(&f.titulo), false, &self.genero))
             .cloned()
             .collect()
     }
@@ -972,6 +993,7 @@ impl App {
             .iter()
             .filter(|s| self.aba != Aba::Favoritos || self.favoritos_vod.iter().any(|t| *t == s.titulo))
             .filter(|s| busca.is_empty() || catalogo::chave_de_ordem(&s.titulo).contains(&busca))
+            .filter(|s| self.generos.tem(&sem_ano(&s.titulo), true, &self.genero))
             .cloned()
             .collect()
     }
