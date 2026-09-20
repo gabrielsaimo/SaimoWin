@@ -1523,7 +1523,19 @@ pub fn abrir_em_foco_na_fileira(app: &mut App) {
 fn filas_na_tela(app: &App) -> Vec<(String, Vec<CartaoDaFila>)> {
     let mut out: Vec<(String, Vec<CartaoDaFila>)> = Vec::new();
 
-    let pendentes = progresso::pendentes();
+    // Só o que existe no acervo comum. Os extras ficam de fora do índice de
+    // busca de propósito — o que não aparece sem o código também não pode
+    // aparecer numa busca comum — e a mesma regra vale aqui: a tela inicial
+    // abre sem código nenhum e não pode ser por onde um título reservado
+    // reaparece. Enquanto o índice não chegou, a fileira fica vazia: mostrar
+    // de menos é o erro certo a cometer.
+    let pendentes: Vec<_> = progresso::pendentes()
+        .into_iter()
+        .filter(|(titulo, _)| {
+            let nome = titulo.split(" · ").next().unwrap_or(titulo);
+            app.acervo.iter().any(|a| a.titulo == nome)
+        })
+        .collect();
     if !pendentes.is_empty() {
         let cartoes = pendentes
             .iter()
