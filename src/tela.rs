@@ -709,7 +709,8 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                         "O Windows copiou só o programa para uma pasta temporária e deixou a \
                          libmpv-2.dll para trás. Clique com o botão direito no arquivo \
                          SaimoTV-Windows.zip, escolha \"Extrair tudo\" e abra o Saimo TV.exe \
-                         de dentro da pasta extraída.",
+                         de dentro da pasta extraída — ou baixe o instalador, que resolve \
+                         isto de uma vez.",
                     )
                 } else {
                     (

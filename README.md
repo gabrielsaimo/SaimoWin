@@ -20,9 +20,15 @@ Do próprio Mac, com o mingw-w64 (`brew install mingw-w64`):
 cd "/Volumes/SSD 1TB/DEV/Saimo/SaimoWin" && ./empacotar.sh
 ```
 
-Sai `dist/SaimoTV-Windows.zip` com o executável e a `libmpv-2.dll`. O
-`--baixar` pega a biblioteca do mpv de novo (compilação oficial do
-shinchiro/mpv-winbuild-cmake).
+Sai `dist/SaimoTV-Instalador.msi`: o executável, a `libmpv-2.dll` e o
+instalador que põe os dois em `%LOCALAPPDATA%\Programs\Saimo TV`, com atalho
+no menu Iniciar e na Área de Trabalho, ficha em "Aplicativos instalados" e
+desinstalação pelo painel do Windows. Instala sem senha de administrador,
+porque instala só para quem está usando o computador.
+
+Precisa do `wixl` (`brew install msitools`). As telas do assistente estão em
+`instalador/ui`, que é a cópia traduzida das do WiX. O `--baixar` pega a
+biblioteca do mpv de novo (compilação oficial do shinchiro/mpv-winbuild-cmake).
 
 ## Rodar no Mac para conferir a interface
 

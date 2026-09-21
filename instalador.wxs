@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Instalador do Saimo TV para Windows 10 e 11.
+
+  Por que existe: o programa era entregue num ZIP com o executável e a
+  libmpv-2.dll soltos. Quem clicava no .exe de dentro da janela do compactador
+  recebia um programa sem vídeo — o Windows copia só o executável para uma
+  pasta temporária e deixa a DLL para trás. O próprio programa tem código para
+  reconhecer esse caso e explicá-lo, o que já diz o tamanho do problema.
+
+  É um MSI, e não um .exe de instalação, porque o MSI é o formato que o próprio
+  Windows entende: aparece em "Aplicativos instalados" com nome, versão,
+  editor e tamanho; desinstala pelo painel; troca a versão anterior no lugar de
+  empilhar cópias; instala calado (`msiexec /i SaimoTV.msi /qn`) para quem
+  administra várias máquinas; e desfaz sozinho o que ficou pela metade quando
+  algo falha no meio.
+
+  Instala por usuário, em %LOCALAPPDATA%\Programs, de propósito: não pede senha
+  de administrador e não falha na máquina de quem não a tem.
+
+  Montado no Mac com o wixl (brew install msitools), pelo empacotar.sh.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Product Id="*" Name="Saimo TV" Manufacturer="Saimo" Version="$(var.Versao)"
+           UpgradeCode="ae09fd6a-ae30-4b03-a9d5-b644146a5c74"
+           Language="1033" Codepage="1252">
+    <!--
+      Idioma 1033 (inglês) de propósito: o wixl escreve "x64;1033" no cabeçalho
+      do pacote e não deixa mudar, e o Windows Installer exige que o idioma do
+      cabeçalho e o do produto sejam o mesmo. O que a pessoa lê não depende
+      disso — as telas vêm com o texto em português já escrito dentro delas —,
+      mas os acentos dependem da tabela de caracteres, que é a 1252.
+    -->
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Languages="1033" SummaryCodepage="1252"
+             Description="Saimo TV $(var.Versao)" Manufacturer="Saimo" />
+
+    <!--
+      Sem senha de administrador: sem ALLUSERS, o Windows instala na conta de
+      quem está usando, e é por isso que a pasta de destino é a do usuário.
+    -->
+    <Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes" />
+
+    <!-- Instalar por cima troca a versão em vez de deixar duas instaladas. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="Já há uma versão mais nova do Saimo TV instalada." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="saimo.ico" SourceFile="assets/saimo.ico" />
+    <Property Id="ARPPRODUCTICON" Value="saimo.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/gabrielsaimo/SaimoPlayer" />
+
+    <!--
+      Windows 10 ou 11. O MSI sozinho não sabe dizer a versão do Windows (ele
+      para no 6.3 para quem não traz manifesto), então a pergunta vai ao
+      registro: CurrentMajorVersionNumber só existe a partir do Windows 10.
+    -->
+    <Property Id="WINMAIOR">
+      <RegistrySearch Id="BuscaWinMaior" Root="HKLM"
+                      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentMajorVersionNumber" Type="raw" />
+    </Property>
+    <Condition Message="O Saimo TV precisa do Windows 10 ou do Windows 11.">
+      Installed OR WINMAIOR
+    </Condition>
+    <Condition Message="O Saimo TV precisa de um Windows de 64 bits.">
+      Installed OR VersionNT64
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="PastaProgramas" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Saimo TV">
+            <Component Id="Programa" Guid="357b2398-109e-4406-bd2c-b7f82be6912c">
+              <File Id="SaimoTVExe" Source="dist/SaimoTV/Saimo TV.exe" Name="Saimo TV.exe" KeyPath="yes" />
+              <File Id="LibMpv" Source="dist/SaimoTV/libmpv-2.dll" Name="libmpv-2.dll" />
+              <File Id="Leiame" Source="dist/SaimoTV/LEIAME.txt" Name="LEIAME.txt" />
+              <RemoveFolder Id="LimparPastaDoPrograma" On="uninstall" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="AtalhoMenuIniciar" Guid="3a8f82f6-8771-45db-8edc-5b28b738c513">
+          <Shortcut Id="AtalhoIniciar" Name="Saimo TV"
+                    Description="Canais ao vivo, filmes e séries"
+                    Target="[INSTALLFOLDER]Saimo TV.exe"
+                    WorkingDirectory="INSTALLFOLDER" Icon="saimo.ico" />
+          <!-- Componente por usuário se ancora numa chave do próprio usuário. -->
+          <RegistryValue Root="HKCU" Key="Software\Saimo\Saimo TV"
+                         Name="AtalhoIniciar" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+
+      <Directory Id="DesktopFolder">
+        <Component Id="AtalhoAreaDeTrabalho" Guid="554c34ab-070d-4f56-a27b-e8d61ae1c460">
+          <Shortcut Id="AtalhoMesa" Name="Saimo TV"
+                    Description="Canais ao vivo, filmes e séries"
+                    Target="[INSTALLFOLDER]Saimo TV.exe"
+                    WorkingDirectory="INSTALLFOLDER" Icon="saimo.ico" />
+          <RegistryValue Root="HKCU" Key="Software\Saimo\Saimo TV"
+                         Name="AtalhoAreaDeTrabalho" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+
+    <!--
+      O assistente: boas-vindas com os termos, o andamento, e o fim com a
+      opção de já abrir o programa. As telas vêm do WiX, traduzidas em
+      instalador/ui.
+    -->
+    <UIRef Id="WixUI_Minimal" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Abrir o Saimo TV agora" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="AbrirOPrograma" FileKey="SaimoTVExe" ExeCommand=""
+                  Return="asyncNoWait" Impersonate="yes" />
+
+    <Feature Id="Principal" Title="Saimo TV" Level="1">
+      <ComponentRef Id="Programa" />
+      <ComponentRef Id="AtalhoMenuIniciar" />
+      <ComponentRef Id="AtalhoAreaDeTrabalho" />
+    </Feature>
+
+  </Product>
+
+  <!-- O botão Concluir também abre o programa, quando a caixinha fica marcada. -->
+  <Fragment>
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="AbrirOPrograma"
+               Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+  </Fragment>
+</Wix>

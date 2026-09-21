@@ -7,7 +7,10 @@
 use std::sync::Mutex;
 
 const REPO: &str = "gabrielsaimo/SaimoPlayer";
-pub const ARQUIVO: &str = "SaimoTV-Windows.zip";
+/// O que procurar no release. Era um ZIP com os arquivos soltos até a 1.7.5,
+/// e passou a ser o instalador: quem baixava o ZIP e clicava no executável de
+/// dentro do compactador ficava sem vídeo, porque a DLL não ia junto.
+pub const ARQUIVO: &str = "SaimoTV-Instalador.msi";
 
 #[derive(Clone, Debug)]
 pub struct Versao {
