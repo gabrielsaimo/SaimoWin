@@ -1294,13 +1294,13 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 return;
             }
 
-            // Letras.
-            let colecao = matches!(app.aba, Aba::Animes | Aba::Doramas);
-            let letras: Vec<(String, usize)> = if colecao { Vec::new() } else { app
-                .gavetas
-                .iter()
-                .map(|g| (g.letra.clone(), if app.aba == Aba::Series { g.series } else { g.filmes }))
-                .collect() };
+            // Letras. Sobraram só no 18+: o resto da grade lista o acervo
+            // inteiro a partir do índice de busca, sem escolher letra.
+            let letras: Vec<(String, usize)> = if app.aba == Aba::Extras {
+                app.gavetas.iter().map(|g| (g.letra.clone(), g.filmes)).collect()
+            } else {
+                Vec::new()
+            };
             let mut escolhida = None;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
@@ -1357,56 +1357,11 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 });
                 return;
             }
-            if !app.busca_vod.trim().is_empty() && app.busca_vod.trim().chars().count() >= 3 {
-                if busca_no_acervo(app, ui) {
-                    return;
-                }
-            }
             if app.aba == Aba::Filmes && app.busca_vod.trim().is_empty() {
                 continuar_assistindo(app, ui);
             }
             grade(app, ui);
         });
-}
-
-/// A letra aberta não tem o título procurado: procura no acervo inteiro.
-/// Devolve verdadeiro quando já desenhou os resultados.
-fn busca_no_acervo(app: &mut App, ui: &mut egui::Ui) -> bool {
-    let na_letra = if matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas) { app.series_na_tela().len() } else { app.filmes_na_tela().len() };
-    if na_letra > 0 {
-        return false;
-    }
-    let busca = crate::catalogo::chave_de_ordem(app.busca_vod.trim());
-    let serie = matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas);
-    let achados: Vec<vod::Achado> = app
-        .acervo
-        .iter()
-        .filter(|a| a.serie == serie && crate::catalogo::chave_de_ordem(&a.titulo).contains(&busca))
-        .take(200)
-        .cloned()
-        .collect();
-    ui.label(egui::RichText::new(format!("Nada na letra {} — no acervo inteiro:", app.letra)).color(SECUNDARIO));
-    ui.add_space(6.0);
-    crate::telemetria::busca(1, &app.busca_vod, !achados.is_empty());
-    if achados.is_empty() {
-        ui.label(egui::RichText::new("Nenhum título com esse nome.").color(TERCIARIO));
-        return true;
-    }
-    let mut ir = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for achado in &achados {
-            let ano = if achado.ano.is_empty() { String::new() } else { format!(" ({})", achado.ano) };
-            let texto = format!("{}{ano}   ·   letra {}", achado.titulo, achado.letra);
-            if ui.selectable_label(false, texto).clicked() {
-                ir = Some(achado.clone());
-            }
-        }
-    });
-    if let Some(achado) = ir {
-        app.abrir_letra(achado.letra.clone());
-        app.busca_vod = achado.titulo;
-    }
-    true
 }
 
 fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
@@ -1639,6 +1594,7 @@ fn filas_na_tela(app: &App) -> Vec<(String, Vec<CartaoDaFila>)> {
             .itens
             .iter()
             .enumerate()
+            .filter(|(_, item)| app.generos.tem(&item.titulo, item.serie(), &app.genero))
             .map(|(indice, item)| CartaoDaFila {
                 favorito: app.favoritos_vod.iter().any(|t| *t == item.titulo),
                 rotulo: item.titulo.clone(),
@@ -1706,15 +1662,15 @@ fn abrir_da_fileira(app: &mut App, fila: usize, indice: usize) {
 
 /// A grade de capas, só com as linhas à vista.
 fn grade(app: &mut App, ui: &mut egui::Ui) {
-    let serie = matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas);
-    let filmes = if serie { Vec::new() } else { app.filmes_na_tela() };
-    let series = if serie { app.series_na_tela() } else { Vec::new() };
-    let total = if serie { series.len() } else { filmes.len() };
+    let itens = app.itens_na_tela();
+    let total = itens.len();
     if total == 0 {
         let texto = match app.aba {
-            Aba::Favoritos => "Nenhum favorito nesta letra. Marque com S ou com o botão direito.",
+            Aba::Favoritos => "Nenhum favorito ainda. Marque com S ou com o botão direito.",
             Aba::Extras => "Nenhum título extra nesta letra.",
-            _ => "Nada nesta letra.",
+            _ if !app.busca_vod.trim().is_empty() => "Nenhum título com esse nome.",
+            _ if !app.genero.is_empty() => "Nenhum título desse gênero.",
+            _ => "Acervo a caminho…",
         };
         ui.label(egui::RichText::new(texto).color(SECUNDARIO));
         return;
@@ -1742,19 +1698,11 @@ fn grade(app: &mut App, ui: &mut egui::Ui) {
                     if indice >= total {
                         break;
                     }
-                    let (titulo, detalhe) = if serie {
-                        let s = &series[indice];
-                        let ano = if s.ano.is_empty() { String::new() } else { format!("{} · ", s.ano) };
-                        (s.titulo.clone(), format!("{ano}{} episódios", s.episodios))
-                    } else {
-                        let f = &filmes[indice];
-                        let versoes = f.versoes.iter().map(|(v, _)| v.to_uppercase()).collect::<Vec<_>>().join(" · ");
-                        (f.titulo.clone(), versoes)
-                    };
-                    let favorito = app.favoritos_vod.iter().any(|t| *t == titulo);
-                    let capa = app.capa(&titulo, serie);
-                    let marca = if serie { None } else { progresso::onde_parou(&titulo) };
-                    let resposta = cartao(ui, &titulo, &detalhe, capa, favorito, indice == foco, marca, largura_cartao, altura_cartao);
+                    let item = &itens[indice];
+                    let favorito = app.favoritos_vod.iter().any(|t| *t == item.titulo);
+                    let capa = app.capa(&item.titulo, item.serie);
+                    let marca = if item.serie { None } else { progresso::onde_parou(&item.titulo) };
+                    let resposta = cartao(ui, &item.titulo, &item.detalhe, capa, favorito, indice == foco, marca, largura_cartao, altura_cartao);
                     if indice == foco && rolar {
                         resposta.scroll_to_me(None);
                     }
@@ -1773,10 +1721,9 @@ fn grade(app: &mut App, ui: &mut egui::Ui) {
     if let Some((indice, favoritar)) = acao {
         app.foco_vod = indice;
         if favoritar {
-            let titulo = if serie { series[indice].titulo.clone() } else { filmes[indice].titulo.clone() };
-            app.favoritar_vod(titulo);
+            app.favoritar_vod(itens[indice].titulo.clone());
         } else {
-            app.abrir_do_acervo();
+            app.abrir_item(itens[indice].clone());
         }
     }
 }

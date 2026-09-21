@@ -13,7 +13,6 @@ mod atualizacao;
 mod capas;
 mod destaques;
 mod generos;
-use generos::sem_ano;
 mod catalogo;
 mod mpv;
 mod progresso;
@@ -93,6 +92,16 @@ impl Aba {
     }
 }
 
+/// Um cartão da grade: o nome, o que vai escrito embaixo dele, e a letra onde
+/// mora o endereço — que só é baixada quando alguém abre o título.
+#[derive(Clone)]
+pub struct ItemNaTela {
+    pub titulo: String,
+    pub detalhe: String,
+    pub serie: bool,
+    pub letra: String,
+}
+
 /// O que está tocando quando não é canal: filme ou episódio.
 pub struct TocandoVod {
     pub titulo: String,
@@ -150,8 +159,10 @@ struct App {
     /// Em qual fileira o teclado está. A coluna é o `foco_vod` de sempre.
     foco_fila: usize,
     carregando_vod: bool,
-    /// Todo o acervo só com nome, tipo e letra, para procurar fora da letra.
+    /// Todo o acervo só com nome, tipo e letra: é dele que a grade se serve.
     acervo: Vec<vod::Achado>,
+    /// O título que espera a letra dele terminar de chegar para abrir.
+    abrir_ao_chegar: Option<(String, bool)>,
     favoritos_vod: Vec<String>,
     /// Busca do acervo, separada da busca de canais da barra lateral.
     busca_vod: String,
@@ -269,6 +280,7 @@ impl App {
             foco_fila: 0,
             carregando_vod: false,
             acervo: Vec::new(),
+            abrir_ao_chegar: None,
             favoritos_vod: ler_lista("favoritos-vod.txt"),
             busca_vod: String::new(),
             quadro: 0,
@@ -460,18 +472,15 @@ impl App {
     }
 
     /// A capa do título: devolve o que já se sabe e manda procurar o resto.
+    /// A capa de um título.
+    ///
+    /// O endereço vem da ficha publicada, resolvida pelo id do TMDB — não mais
+    /// de uma busca por nome feita aqui, que era lenta e trocava filmes de nome
+    /// igual. Quem não tem ficha fica sem capa, e a tela põe uma marca no
+    /// lugar.
     fn capa(&mut self, titulo: &str, serie: bool) -> Option<egui::TextureHandle> {
-        match capas::conhecida(titulo, serie) {
-            Some(url) if url.is_empty() => None,
-            Some(url) => self.logo(&url),
-            None => {
-                let emissor = self.emissor.clone();
-                capas::procurar(titulo.to_string(), serie, move |_| {
-                    let _ = emissor.send(Recado::Capa);
-                });
-                None
-            }
-        }
+        let endereco = self.generos.capa(titulo, serie)?.to_string();
+        self.logo(&endereco)
     }
 
     fn proxima_fonte_vod(&mut self, motivo: &str) {
@@ -669,12 +678,14 @@ impl App {
                     if letra == self.letra {
                         self.filmes = lista;
                         self.carregando_vod = false;
+                        self.abrir_o_que_esperava();
                     }
                 }
                 Recado::Series(letra, lista) => {
                     if letra == self.letra {
                         self.series = lista;
                         self.carregando_vod = false;
+                        self.abrir_o_que_esperava();
                     }
                 }
                 Recado::Generos(lidos) => {
@@ -968,6 +979,101 @@ impl App {
         }
     }
 
+    /// O que a grade mostra: um título, o bastante para desenhar o cartão, e a
+    /// letra onde mora o endereço dele.
+    ///
+    /// O acervo é publicado por letra porque são 30 MB, mas o índice de busca
+    /// tem os trinta mil nomes em 800 KB — então a grade lista tudo a partir
+    /// dele e só baixa a letra quando alguém abre um título. O 18+ fica de
+    /// fora: ele não entra no índice, e continua vindo uma letra por vez.
+    pub fn itens_na_tela(&self) -> Vec<ItemNaTela> {
+        let busca = catalogo::chave_de_ordem(self.busca_vod.trim());
+        let serie = matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas);
+
+        // Coleções e 18+ já estão inteiros na memória; o resto vem do índice.
+        if matches!(self.aba, Aba::Animes | Aba::Doramas) {
+            return self
+                .series_na_tela()
+                .into_iter()
+                .map(|s| {
+                    let ano = if s.ano.is_empty() { String::new() } else { format!("{} · ", s.ano) };
+                    ItemNaTela {
+                        detalhe: format!("{ano}{} episódios", s.episodios),
+                        titulo: s.titulo,
+                        serie: true,
+                        letra: self.letra.clone(),
+                    }
+                })
+                .collect();
+        }
+        if self.aba == Aba::Extras {
+            return self
+                .filmes_na_tela()
+                .into_iter()
+                .map(|f| ItemNaTela {
+                    detalhe: f.versoes.iter().map(|(v, _)| v.to_uppercase()).collect::<Vec<_>>().join(" · "),
+                    titulo: f.titulo,
+                    serie: false,
+                    letra: self.letra.clone(),
+                })
+                .collect();
+        }
+
+        self.acervo
+            .iter()
+            .filter(|a| a.serie == serie || self.aba == Aba::Favoritos)
+            .filter(|a| self.aba != Aba::Favoritos || self.favoritos_vod.iter().any(|t| *t == a.titulo))
+            .filter(|a| busca.is_empty() || catalogo::chave_de_ordem(&a.titulo).contains(&busca))
+            .filter(|a| self.generos.tem(&a.titulo, a.serie, &self.genero))
+            .map(|a| ItemNaTela {
+                titulo: a.titulo.clone(),
+                detalhe: a.ano.clone(),
+                serie: a.serie,
+                letra: a.letra.clone(),
+            })
+            .collect()
+    }
+
+    /// Abre um título da grade: a letra dele pode ainda não ter chegado, e aí
+    /// a abertura fica esperando o recado com a lista.
+    pub fn abrir_item(&mut self, item: ItemNaTela) {
+        if self.letra != item.letra && self.aba != Aba::Extras && !matches!(self.aba, Aba::Animes | Aba::Doramas) {
+            self.abrir_letra(item.letra.clone());
+        }
+        if item.serie {
+            if let Some(s) = self.series.iter().find(|s| s.titulo == item.titulo).cloned() {
+                self.foco_vod = 0;
+                self.abrir_serie(s);
+                return;
+            }
+        } else if let Some(f) = self.filmes.iter().find(|f| f.titulo == item.titulo).cloned() {
+            if let Some((_, urls)) = f.versoes.first().cloned() {
+                self.tocar_vod(f.titulo, urls, 0, true);
+            }
+            return;
+        }
+        self.abrir_ao_chegar = Some((item.titulo, item.serie));
+        self.carregando_vod = true;
+    }
+
+    /// Chamado quando a lista de uma letra chega: se alguém estava esperando
+    /// um título dela, abre agora.
+    fn abrir_o_que_esperava(&mut self) {
+        let Some((titulo, serie)) = self.abrir_ao_chegar.clone() else { return };
+        if serie {
+            if let Some(s) = self.series.iter().find(|s| s.titulo == titulo).cloned() {
+                self.abrir_ao_chegar = None;
+                self.foco_vod = 0;
+                self.abrir_serie(s);
+            }
+        } else if let Some(f) = self.filmes.iter().find(|f| f.titulo == titulo).cloned() {
+            self.abrir_ao_chegar = None;
+            if let Some((_, urls)) = f.versoes.first().cloned() {
+                self.tocar_vod(f.titulo, urls, 0, true);
+            }
+        }
+    }
+
     /// Filmes da seção aberta, já filtrados pela busca e pela seção.
     pub fn filmes_na_tela(&self) -> Vec<vod::Filme> {
         // A lista de gêneros guarda o título como o acervo o escreve, sem o
@@ -982,7 +1088,7 @@ impl App {
                 _ => !f.reservado || self.liberado,
             })
             .filter(|f| busca.is_empty() || catalogo::chave_de_ordem(&f.titulo).contains(&busca))
-            .filter(|f| self.generos.tem(&sem_ano(&f.titulo), false, &self.genero))
+            .filter(|f| self.generos.tem(&f.titulo, false, &self.genero))
             .cloned()
             .collect()
     }
@@ -993,7 +1099,7 @@ impl App {
             .iter()
             .filter(|s| self.aba != Aba::Favoritos || self.favoritos_vod.iter().any(|t| *t == s.titulo))
             .filter(|s| busca.is_empty() || catalogo::chave_de_ordem(&s.titulo).contains(&busca))
-            .filter(|s| self.generos.tem(&sem_ano(&s.titulo), true, &self.genero))
+            .filter(|s| self.generos.tem(&s.titulo, true, &self.genero))
             .cloned()
             .collect()
     }
@@ -1004,19 +1110,13 @@ impl App {
         }
         if self.serie_aberta.is_some() {
             self.episodios.len()
-        } else if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
-            self.series_na_tela().len()
         } else {
-            self.filmes_na_tela().len()
+            self.itens_na_tela().len()
         }
     }
 
     fn titulo_em_foco(&self) -> Option<String> {
-        if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
-            self.series_na_tela().get(self.foco_vod).map(|s| s.titulo.clone())
-        } else {
-            self.filmes_na_tela().get(self.foco_vod).map(|f| f.titulo.clone())
-        }
+        self.itens_na_tela().get(self.foco_vod).map(|i| i.titulo.clone())
     }
 
     /// Enter no acervo: toca o filme ou o episódio, ou abre a série.
@@ -1027,15 +1127,8 @@ impl App {
             self.tocar_vod(titulo, episodio.urls, 0, true);
             return;
         }
-        if matches!(self.aba, Aba::Series | Aba::Animes | Aba::Doramas) {
-            if let Some(serie) = self.series_na_tela().get(self.foco_vod).cloned() {
-                self.foco_vod = 0;
-                self.abrir_serie(serie);
-            }
-        } else if let Some(filme) = self.filmes_na_tela().get(self.foco_vod).cloned() {
-            if let Some((_, urls)) = filme.versoes.first().cloned() {
-                self.tocar_vod(filme.titulo, urls, 0, true);
-            }
+        if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
+            self.abrir_item(item);
         }
     }
 
