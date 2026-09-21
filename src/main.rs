@@ -10,6 +10,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod atualizacao;
+mod fontes_desativadas;
 mod capas;
 mod destaques;
 mod generos;
@@ -66,6 +67,8 @@ enum Recado {
     Generos(generos::Generos),
     Episodios(String, Vec<vod::Episodio>),
     Acervo(Vec<vod::Achado>),
+    /// A lista de servidores desligados mudou: a lista de canais muda junto.
+    FontesDesativadas,
     /// Uma capa achada no TMDB: só serve para redesenhar a lista.
     Capa,
 }
@@ -144,6 +147,9 @@ struct App {
     aviso: Option<(String, Instant)>,
     aba: Aba,
     guia_aberto: bool,
+    /// A lista publicada como ela chegou, sem nada peneirado: é dela que a
+    /// lista visível é remontada quando um servidor é religado.
+    publicados: Vec<Canal>,
     gavetas: Vec<vod::Gaveta>,
     letra: String,
     filmes: Vec<vod::Filme>,
@@ -218,6 +224,17 @@ impl App {
             });
         }
         {
+            // Os servidores desligados no painel, de dois em dois minutos: é o
+            // tempo que alguém aguenta um canal quebrado.
+            let emissor = emissor.clone();
+            std::thread::spawn(move || loop {
+                if fontes_desativadas::atualizar() {
+                    let _ = emissor.send(Recado::FontesDesativadas);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(120));
+            });
+        }
+        {
             // O índice do acervo é pequeno e dá as bases dos endereços; sem ele
             // nenhum filme abre.
             let emissor = emissor.clone();
@@ -244,7 +261,7 @@ impl App {
         let mut app = App {
             mpv,
             erro_do_mpv,
-            canais,
+            canais: canais.clone(),
             restritos,
             liberado: false,
             favoritos,
@@ -267,6 +284,7 @@ impl App {
             aviso: None,
             aba: Aba::Canais,
             guia_aberto: false,
+            publicados: canais.clone(),
             gavetas: Vec::new(),
             letra: "A".into(),
             filmes: Vec::new(),
@@ -317,10 +335,17 @@ impl App {
 
     fn reordenar(&mut self) {
         let atual = self.tocando.as_ref().and_then(|t| self.canais.get(t.canal)).map(|c| c.nome.clone());
-        let mut lista = self.canais.clone();
+        // Sempre da lista publicada: peneirar a que já está na tela faria o
+        // servidor religado não voltar nunca, porque suas fontes já teriam
+        // sido jogadas fora.
+        let mut lista = fontes_desativadas::peneirar_canais(self.publicados.clone());
         if self.liberado {
             let ja: Vec<String> = lista.iter().map(|c| c.nome.clone()).collect();
-            lista.extend(self.restritos.iter().filter(|r| !ja.contains(&r.nome)).cloned());
+            lista.extend(
+                fontes_desativadas::peneirar_canais(self.restritos.clone())
+                    .into_iter()
+                    .filter(|r| !ja.contains(&r.nome)),
+            );
         } else {
             lista.retain(|c| c.secao() != "Adulto");
         }
@@ -349,9 +374,10 @@ impl App {
         if restrita {
             self.restritos = base;
         } else {
-            // A lista de canais visíveis é a de trabalho; guardar a publicada
-            // pura evita duplicar restrito a cada recarga.
-            self.canais = base;
+            // A lista de canais visíveis é montada a cada reordenação; esta
+            // é a publicada pura, e guardá-la evita duplicar restrito a cada
+            // recarga.
+            self.publicados = base;
         }
         self.reordenar();
         self.pedir_guia();
@@ -673,6 +699,10 @@ impl App {
                 Recado::Guia => {}
                 Recado::Gavetas(lista) => self.gavetas = lista,
                 Recado::Acervo(lista) => self.acervo = lista,
+                Recado::FontesDesativadas => {
+                    self.reordenar();
+                    self.pedir_guia();
+                }
                 Recado::Capa => {}
                 Recado::Filmes(letra, lista) => {
                     if letra == self.letra {

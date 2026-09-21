@@ -165,7 +165,9 @@ fn ler_filmes(letra: &str, prefixo: &str) -> Vec<Filme> {
                 .iter()
                 .filter_map(|parte| {
                     let (versao, lista) = parte.split_once('=')?;
-                    let urls: Vec<String> = lista.split(',').filter_map(montar).collect();
+                    let urls = crate::fontes_desativadas::peneirar(
+                        lista.split(',').filter_map(montar).collect(),
+                    );
                     if urls.is_empty() {
                         None
                     } else {
@@ -239,7 +241,7 @@ pub fn colecao(tipo: &str) -> Vec<(Serie, Vec<Episodio>)> {
         if identidade.is_none() { continue; }
         let campos: Vec<&str> = linha.split('\t').collect();
         if campos.len() < 4 { continue; }
-        let urls: Vec<String> = campos[3].split(',').filter_map(montar).collect();
+        let urls = crate::fontes_desativadas::peneirar(campos[3].split(',').filter_map(montar).collect());
         if urls.is_empty() { continue; }
         episodios.push(Episodio {
             temporada: campos[0].parse().unwrap_or(0),
@@ -274,7 +276,7 @@ pub fn episodios(letra: &str, serie: &Serie) -> Vec<Episodio> {
         if campos.len() < 4 {
             continue;
         }
-        let urls: Vec<String> = campos[3].split(',').filter_map(montar).collect();
+        let urls = crate::fontes_desativadas::peneirar(campos[3].split(',').filter_map(montar).collect());
         if urls.is_empty() {
             continue;
         }
