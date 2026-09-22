@@ -1358,7 +1358,9 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 });
                 return;
             }
-            if app.aba == Aba::Filmes && app.busca_vod.trim().is_empty() {
+            // Em qualquer seção do acervo, não só em Filmes: quem parou no
+            // meio de um episódio procura por onde estava na seção onde estava.
+            if !matches!(app.aba, Aba::Inicio | Aba::Extras) && app.busca_vod.trim().is_empty() {
                 continuar_assistindo(app, ui);
             }
             grade(app, ui);
@@ -1385,7 +1387,7 @@ fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
                 ui.painter().text(rect.left_top() + egui::vec2(12.0, 30.0), Align2::LEFT_TOP, progresso::falta(marca), normal(11.0), SECUNDARIO);
                 let trilho = Rect::from_min_size(Pos2::new(rect.left() + 12.0, rect.bottom() - 10.0), egui::vec2(rect.width() - 24.0, 3.0));
                 ui.painter().rect_filled(trilho, 1.5, Color32::from_white_alpha(40));
-                let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * (marca.posicao / marca.duracao) as f32, 3.0));
+                let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * progresso::fracao(marca), 3.0));
                 ui.painter().rect_filled(feito, 1.5, VERMELHO);
                 let resposta = resposta.on_hover_text("Clique para achar e continuar · botão direito tira da lista");
                 if resposta.clicked() {
@@ -1702,7 +1704,11 @@ fn grade(app: &mut App, ui: &mut egui::Ui) {
                     let item = &itens[indice];
                     let favorito = app.favoritos_vod.iter().any(|t| *t == item.titulo);
                     let capa = app.capa(&item.titulo, item.serie);
-                    let marca = if item.serie { None } else { progresso::onde_parou(&item.titulo) };
+                    let marca = if item.serie {
+                        progresso::onde_parou_na_serie(&item.titulo).map(|(_, m)| m)
+                    } else {
+                        progresso::onde_parou(&item.titulo)
+                    };
                     let resposta = cartao(ui, &item.titulo, &item.detalhe, capa, favorito, indice == foco, marca, largura_cartao, altura_cartao);
                     if indice == foco && rolar {
                         resposta.scroll_to_me(None);
@@ -1769,7 +1775,7 @@ fn cartao(
     if let Some(marca) = marca {
         let trilho = Rect::from_min_size(Pos2::new(quadro.left() + 8.0, quadro.bottom() - 9.0), egui::vec2(quadro.width() - 16.0, 4.0));
         pintor.rect_filled(trilho, 2.0, Color32::from_black_alpha(170));
-        let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * (marca.posicao / marca.duracao) as f32, 4.0));
+        let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * progresso::fracao(&marca), 4.0));
         pintor.rect_filled(feito, 2.0, VERMELHO);
     }
 
@@ -1851,7 +1857,7 @@ fn episodios(app: &mut App, ui: &mut egui::Ui, serie: &vod::Serie) {
             if let Some(m) = marca {
                 let trilho = Rect::from_min_size(Pos2::new(rect.left() + 36.0, rect.bottom() - 6.0), egui::vec2(rect.width() - 50.0, 2.0));
                 ui.painter().rect_filled(trilho, 1.0, Color32::from_white_alpha(35));
-                let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * (m.posicao / m.duracao) as f32, 2.0));
+                let feito = Rect::from_min_size(trilho.min, egui::vec2(trilho.width() * progresso::fracao(&m), 2.0));
                 ui.painter().rect_filled(feito, 1.0, VERMELHO);
             }
             if posicao == foco && ui.input(|i| i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowUp)) {

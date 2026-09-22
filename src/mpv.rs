@@ -219,6 +219,12 @@ impl Mpv {
             // doramas e animes novos, responde 200 com "security error" no
             // lugar da playlist.
             ("http-header-fields", "Accept: */*"),
+            // O EmbedPlayer serve os pedaços do HLS com extensão ".js", e o
+            // FFmpeg os recusa por isso: "not in allowed_segment_extensions".
+            // Sem estas duas opções a duração do filme sai vazia — e é dela
+            // que depende guardar onde a pessoa parou.
+            ("demuxer-lavf-o-add", "allowed_segment_extensions=ALL"),
+            ("demuxer-lavf-o-add", "extension_picky=0"),
             ("tls-verify", "no"),
             ("keep-open", "no"),
             ("idle", "yes"),
@@ -380,12 +386,15 @@ impl Mpv {
     }
 
     /// Posição e duração do que está tocando, quando o mpv já sabe.
+    /// Onde o vídeo está e quanto dura. Duração 0 quando a fonte não a diz —
+    /// canal ao vivo, e também o HLS de origem que não declara o fim.
     pub fn posicao(&self) -> Option<(f64, f64)> {
         let posicao = self.ler("time-pos")?.parse::<f64>().ok()?;
-        let duracao = self.ler("duration")?.parse::<f64>().ok()?;
-        if duracao <= 0.0 {
-            return None;
-        }
+        let duracao = self
+            .ler("duration")
+            .and_then(|d| d.parse::<f64>().ok())
+            .filter(|d| *d > 0.0)
+            .unwrap_or(0.0);
         Some((posicao, duracao))
     }
 
