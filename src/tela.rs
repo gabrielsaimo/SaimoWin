@@ -121,6 +121,9 @@ pub fn desenhar(app: &mut App, ctx: &egui::Context) {
     if app.ajuda_aberta {
         atalhos(app, ctx);
     }
+    if app.ficha_aberta.is_some() {
+        ficha_na_tela(app, ctx);
+    }
     atualizacao_na_tela(app, ctx);
 }
 
@@ -1793,7 +1796,11 @@ fn cartao(
         normal(10.5),
         SECUNDARIO,
     );
-    let dica = if favorito { "Enter assiste · S tira dos favoritos" } else { "Enter assiste · S favorita" };
+    let dica = if favorito {
+        "Enter assiste · I mostra a ficha · S tira dos favoritos"
+    } else {
+        "Enter assiste · I mostra a ficha · S favorita"
+    };
     resposta.on_hover_text(dica)
 }
 
@@ -1896,7 +1903,7 @@ fn avisos(app: &mut App, ctx: &egui::Context) {
 
 /// Todos os comandos numa tela só.
 fn atalhos(app: &mut App, ctx: &egui::Context) {
-    let linhas: [(&str, &str); 18] = [
+    let linhas: [(&str, &str); 19] = [
         ("Espaço", "tocar ou pausar"),
         ("Seta cima / baixo", "andar pela lista"),
         ("Enter", "assistir o escolhido"),
@@ -1914,6 +1921,7 @@ fn atalhos(app: &mut App, ctx: &egui::Context) {
         ("+  −", "volume"),
         ("H  ou  F1", "esta tela"),
         ("Esc", "voltar / fechar / sair da tela cheia"),
+        ("I", "ficha do título: sinopse, elenco e mais"),
         ("Botão direito", "favoritar na lista ou na grade"),
     ];
     let mut aberta = true;
@@ -1939,6 +1947,195 @@ fn atalhos(app: &mut App, ctx: &egui::Context) {
         });
     if !aberta {
         app.ajuda_aberta = false;
+    }
+}
+
+/// A ficha de um título, numa janela sobre a grade.
+///
+/// Antes um cartaz na grade era só isso: um cartaz. Para saber do que o filme
+/// tratava, quanto durava ou quem estava nele, só abrindo — dois minutos de
+/// fonte, player e espera para descobrir que não era aquilo.
+///
+/// São os mesmos campos que o celular, o Mac e a TV Box mostram. O elenco leva
+/// a sério o clique: tocar num ator abre o que ele fez **e que existe neste
+/// acervo**, que é a única lista que vale de dentro do programa.
+fn ficha_na_tela(app: &mut App, ctx: &egui::Context) {
+    let Some((titulo, serie)) = app.ficha_aberta.clone() else { return };
+    let mut aberta = true;
+    let nome_da_janela = match &app.ficha_ator {
+        Some((_, nome)) => nome.clone(),
+        None => titulo.clone(),
+    };
+    let mut abrir_ator: Option<(u32, String)> = None;
+    let mut voltar_do_ator = false;
+    let mut abrir_titulo: Option<vod::Achado> = None;
+
+    egui::Window::new(egui::RichText::new(nome_da_janela).font(forte(15.0)))
+        .order(egui::Order::Foreground)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(560.0)
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .open(&mut aberta)
+        .frame(egui::Frame::window(&ctx.style()).fill(PAINEL).inner_margin(egui::Margin::same(18.0)))
+        .show(ctx, |ui| {
+            ui.set_max_height(520.0);
+            if app.ficha_ator.is_some() {
+                if ui.button(egui::RichText::new("‹ Voltar à ficha").font(normal(12.0))).clicked() {
+                    voltar_do_ator = true;
+                }
+                ui.add_space(8.0);
+                if app.filmografia_carregando {
+                    ui.label(egui::RichText::new("Procurando no acervo…").color(SECUNDARIO));
+                } else if app.filmografia.is_empty() {
+                    ui.label(egui::RichText::new("Nada desta pessoa no acervo.").color(SECUNDARIO));
+                    ui.label(
+                        egui::RichText::new("A filmografia mostra só o que dá para abrir daqui.")
+                            .font(normal(11.0))
+                            .color(TERCIARIO),
+                    );
+                } else {
+                    egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
+                        for achado in app.filmografia.clone() {
+                            let rotulo = if achado.serie { "Série" } else { "Filme" };
+                            let nome = if achado.ano.is_empty() {
+                                achado.titulo.clone()
+                            } else {
+                                format!("{} ({})", achado.titulo, achado.ano)
+                            };
+                            if ui
+                                .add(egui::Label::new(
+                                    egui::RichText::new(format!("{nome}  ·  {rotulo}"))
+                                        .font(normal(12.5)),
+                                ).sense(Sense::click()))
+                                .on_hover_text("Abrir")
+                                .clicked()
+                            {
+                                abrir_titulo = Some(achado.clone());
+                            }
+                            ui.add_space(4.0);
+                        }
+                    });
+                }
+                return;
+            }
+
+            if app.ficha_carregando {
+                ui.label(egui::RichText::new("Buscando a ficha…").color(SECUNDARIO));
+                return;
+            }
+            let Some(ficha) = app.ficha.clone() else {
+                ui.label(egui::RichText::new("Sem ficha para este título.").color(SECUNDARIO));
+                return;
+            };
+            if ficha.vazia() {
+                ui.label(egui::RichText::new("Sem ficha para este título.").color(SECUNDARIO));
+                return;
+            }
+
+            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                let mut numeros: Vec<String> = Vec::new();
+                if !ficha.ano.is_empty() {
+                    numeros.push(ficha.ano.clone());
+                }
+                if let Some(minutos) = ficha.duracao {
+                    numeros.push(if serie {
+                        format!("{minutos} min/ep")
+                    } else {
+                        format!("{minutos} min")
+                    });
+                }
+                if let Some(nota) = &ficha.classificacao {
+                    numeros.push(nota.clone());
+                }
+                if ficha.nota > 0.0 {
+                    numeros.push(format!("★ {:.1}", ficha.nota));
+                }
+                if !numeros.is_empty() {
+                    ui.label(
+                        egui::RichText::new(numeros.join("   ·   "))
+                            .font(forte(12.0))
+                            .color(SECUNDARIO),
+                    );
+                }
+                if !ficha.generos.is_empty() {
+                    ui.label(
+                        egui::RichText::new(ficha.generos.join(", "))
+                            .font(normal(11.5))
+                            .color(TERCIARIO),
+                    );
+                }
+                if !ficha.frase.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&ficha.frase).font(normal(12.0)).italics().color(SECUNDARIO));
+                }
+                if !ficha.sinopse.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("Sinopse").font(forte(12.5)));
+                    ui.add_space(3.0);
+                    ui.label(egui::RichText::new(&ficha.sinopse).font(normal(12.0)).color(SECUNDARIO));
+                }
+                let creditos = [
+                    (if serie { "Criação" } else { "Direção" }, ficha.assinatura.clone()),
+                    ("Roteiro", ficha.roteiro.clone()),
+                    ("Produção", ficha.produtora.clone()),
+                ];
+                let creditos: Vec<_> = creditos.iter().filter(|(_, v)| !v.is_empty()).collect();
+                if !creditos.is_empty() {
+                    ui.add_space(10.0);
+                    for (rotulo, valor) in creditos {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("{rotulo}: ")).font(forte(11.5)));
+                            ui.label(egui::RichText::new(valor).font(normal(11.5)).color(SECUNDARIO));
+                        });
+                    }
+                }
+                if !ficha.elenco.is_empty() {
+                    ui.add_space(12.0);
+                    ui.label(egui::RichText::new("Elenco").font(forte(12.5)));
+                    ui.add_space(4.0);
+                    for pessoa in &ficha.elenco {
+                        let texto = if pessoa.papel.is_empty() {
+                            pessoa.nome.clone()
+                        } else {
+                            format!("{}  ·  {}", pessoa.nome, pessoa.papel)
+                        };
+                        if ui
+                            .add(egui::Label::new(
+                                egui::RichText::new(texto).font(normal(12.0)),
+                            ).sense(Sense::click()))
+                            .on_hover_text(format!("Ver o que {} tem no acervo", pessoa.nome))
+                            .clicked()
+                        {
+                            abrir_ator = Some((pessoa.id, pessoa.nome.clone()));
+                        }
+                        ui.add_space(3.0);
+                    }
+                }
+            });
+        });
+
+    if voltar_do_ator {
+        app.ficha_ator = None;
+        app.filmografia.clear();
+    }
+    if let Some((id, nome)) = abrir_ator {
+        app.abrir_ator(id, nome);
+    }
+    if let Some(achado) = abrir_titulo {
+        app.ficha_aberta = None;
+        app.ficha_ator = None;
+        app.abrir_item(crate::ItemNaTela {
+            titulo: achado.titulo.clone(),
+            detalhe: if achado.serie { "Série".into() } else { "Filme".into() },
+            serie: achado.serie,
+            letra: achado.letra.clone(),
+        });
+    }
+    if !aberta {
+        app.ficha_aberta = None;
+        app.ficha_ator = None;
+        app.filmografia.clear();
     }
 }
 

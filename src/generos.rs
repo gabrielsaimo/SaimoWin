@@ -19,6 +19,14 @@ pub struct Generos {
     mapa: HashMap<String, Vec<String>>,
     /// "f|Nome" ou "s|Nome" -> o endereço do pôster, quando o TMDB conhece.
     capas: HashMap<String, String>,
+    /// "f|Nome" ou "s|Nome" -> o id do TMDB. Com ele, a ficha completa de um
+    /// título é um pedido só, sem busca por nome nem desempate.
+    ids: HashMap<String, u32>,
+    /// O caminho inverso: id do TMDB -> título do acervo. É assim que a
+    /// filmografia de um ator vira uma lista clicável — só entra o que existe
+    /// aqui dentro. Séries entram com o id negativo, para não colidir com o
+    /// filme de mesmo número.
+    por_id: HashMap<i64, String>,
     /// Todos os que aparecem no acervo, em ordem.
     pub todos: Vec<String>,
 }
@@ -54,6 +62,21 @@ impl Generos {
     /// Antes a capa era procurada pelo nome no TMDB, a cada abertura: lento, e
     /// errado quando dois filmes se chamam igual. Quem não tem ficha fica sem
     /// capa, e a tela põe uma marca no lugar.
+    /// O id do TMDB de um título, quando o gerador o resolveu.
+    pub fn id(&self, titulo: &str, serie: bool) -> Option<u32> {
+        let marca = if serie { "s" } else { "f" };
+        self.ids
+            .get(&format!("{marca}|{titulo}"))
+            .or_else(|| self.ids.get(&format!("{marca}|{}", sem_ano(titulo))))
+            .copied()
+    }
+
+    /// O título do acervo que corresponde a um id do TMDB, se houver.
+    pub fn titulo_de(&self, id: u32, serie: bool) -> Option<&str> {
+        let marca = if serie { -(id as i64) } else { id as i64 };
+        self.por_id.get(&marca).map(String::as_str)
+    }
+
     pub fn capa(&self, titulo: &str, serie: bool) -> Option<&str> {
         let marca = if serie { "s" } else { "f" };
         self.capas
@@ -74,6 +97,8 @@ pub fn baixar() -> Generos {
 fn ler(texto: &str) -> Generos {
     let mut mapa = HashMap::new();
     let mut capas = HashMap::new();
+    let mut ids: HashMap<String, u32> = HashMap::new();
+    let mut por_id: HashMap<i64, String> = HashMap::new();
     let mut vistos = BTreeSet::new();
     let mut base = String::new();
     // tipo \t título \t id do TMDB \t pôster \t gêneros
@@ -93,6 +118,15 @@ fn ler(texto: &str) -> Generos {
         if !campos[3].trim().is_empty() {
             capas.insert(chave.clone(), format!("{base}{}", campos[3]));
         }
+        if let Ok(id) = campos[2].trim().parse::<u32>() {
+            if id > 0 {
+                ids.insert(chave.clone(), id);
+                let marca = if campos[0] == "s" { -(id as i64) } else { id as i64 };
+                // Um mesmo id pode aparecer duas vezes no acervo (o mesmo
+                // filme em duas grafias); o primeiro basta.
+                por_id.entry(marca).or_insert_with(|| campos[1].to_string());
+            }
+        }
         let lista: Vec<String> = campos[4]
             .split(',')
             .map(str::trim)
@@ -107,7 +141,7 @@ fn ler(texto: &str) -> Generos {
         }
         mapa.insert(chave, lista);
     }
-    Generos { mapa, capas, todos: vistos.into_iter().collect() }
+    Generos { mapa, capas, ids, por_id, todos: vistos.into_iter().collect() }
 }
 
 /// O título sem o ano final, que é como a lista de gêneros o guarda.

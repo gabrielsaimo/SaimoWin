@@ -14,6 +14,7 @@ mod fontes_desativadas;
 mod capas;
 mod destaques;
 mod generos;
+mod ficha;
 mod catalogo;
 mod mpv;
 mod progresso;
@@ -71,6 +72,11 @@ enum Recado {
     FontesDesativadas,
     /// Uma capa achada no TMDB: só serve para redesenhar a lista.
     Capa,
+    /// A ficha de um título chegou: sinopse, duração, gêneros e elenco.
+    Ficha(String, bool, Option<ficha::Ficha>),
+    /// Os trabalhos de um ator, como o TMDB os devolve. O cruzamento com o
+    /// acervo é feito na thread do desenho, que é onde o índice está.
+    Filmografia(u32, Vec<(u32, bool)>),
 }
 
 /// O que ocupa a área principal: o vídeo, ou uma das seções do acervo —
@@ -185,6 +191,16 @@ struct App {
     velocidade: f32,
     preencher: bool,
     ultimo_mouse: Option<egui::Pos2>,
+    /// O título cuja ficha está aberta: nome, se é série e o detalhe do cartão.
+    pub ficha_aberta: Option<(String, bool)>,
+    /// A ficha já baixada do título aberto, quando chegou.
+    pub ficha: Option<ficha::Ficha>,
+    /// Enquanto o pedido não volta, a janela mostra que está a caminho.
+    pub ficha_carregando: bool,
+    /// O ator aberto dentro da ficha, e o que ele tem no acervo.
+    pub ficha_ator: Option<(u32, String)>,
+    pub filmografia: Vec<vod::Achado>,
+    pub filmografia_carregando: bool,
 }
 
 impl App {
@@ -312,6 +328,12 @@ impl App {
             velocidade: 1.0,
             preencher: false,
             ultimo_mouse: None,
+            ficha_aberta: None,
+            ficha: None,
+            ficha_carregando: false,
+            ficha_ator: None,
+            filmografia: Vec::new(),
+            filmografia_carregando: false,
         };
         app.reordenar();
         app
@@ -486,6 +508,45 @@ impl App {
         mpv.ir_para(marca.posicao);
         let minutos = (marca.posicao / 60.0).round() as i64;
         self.aviso = Some((format!("continuando de {minutos} min"), Instant::now()));
+    }
+
+    /// Abre a ficha de um título: sinopse, duração, gêneros e elenco.
+    ///
+    /// O pedido vai para uma thread; enquanto não volta, a janela já está no
+    /// ar dizendo que está a caminho. Sem id do TMDB não há o que pedir — e é
+    /// melhor dizer isso do que abrir uma janela que nunca preenche.
+    pub fn abrir_ficha(&mut self, titulo: String, serie: bool) {
+        self.ficha_ator = None;
+        self.filmografia.clear();
+        self.ficha = ficha::conhecida(&titulo, serie);
+        self.ficha_aberta = Some((titulo.clone(), serie));
+        if self.ficha.is_some() {
+            self.ficha_carregando = false;
+            return;
+        }
+        let Some(id) = self.generos.id(&titulo, serie) else {
+            self.ficha_carregando = false;
+            return;
+        };
+        self.ficha_carregando = true;
+        let emissor = self.emissor.clone();
+        std::thread::spawn(move || {
+            let achada = ficha::baixar(&titulo, serie, id);
+            let _ = emissor.send(Recado::Ficha(titulo, serie, achada));
+        });
+    }
+
+    /// Abre, dentro da ficha, o que um ator tem neste acervo.
+    pub fn abrir_ator(&mut self, id: u32, nome: String) {
+        self.ficha_ator = Some((id, nome));
+        self.filmografia.clear();
+        self.filmografia_carregando = true;
+        let emissor = self.emissor.clone();
+        // A rede vai para a thread; o cruzamento com o acervo é feito na
+        // volta, aqui, que é onde o índice e as fichas moram.
+        std::thread::spawn(move || {
+            let _ = emissor.send(Recado::Filmografia(id, ficha::creditos_de(id)));
+        });
     }
 
     fn favoritar_vod(&mut self, titulo: String) {
@@ -704,6 +765,20 @@ impl App {
                     self.pedir_guia();
                 }
                 Recado::Capa => {}
+                Recado::Ficha(titulo, serie, achada) => {
+                    // A janela pode ter sido fechada, ou trocada de título,
+                    // enquanto o pedido corria: só vale a resposta do aberto.
+                    if self.ficha_aberta.as_ref() == Some(&(titulo, serie)) {
+                        self.ficha = achada;
+                        self.ficha_carregando = false;
+                    }
+                }
+                Recado::Filmografia(ator, creditos) => {
+                    if self.ficha_ator.as_ref().map(|(id, _)| *id) == Some(ator) {
+                        self.filmografia = ficha::no_acervo(&creditos, &self.generos, &self.acervo);
+                        self.filmografia_carregando = false;
+                    }
+                }
                 Recado::Filmes(letra, lista) => {
                     if letra == self.letra {
                         self.filmes = lista;
@@ -885,7 +960,14 @@ impl App {
                     self.abrir_secao(proxima);
                 }
                 egui::Key::Escape => {
-                    if self.ajuda_aberta {
+                    if self.ficha_aberta.is_some() {
+                        if self.ficha_ator.is_some() {
+                            self.ficha_ator = None;
+                            self.filmografia.clear();
+                        } else {
+                            self.ficha_aberta = None;
+                        }
+                    } else if self.ajuda_aberta {
                         self.ajuda_aberta = false;
                     } else if self.serie_aberta.is_some() {
                         self.serie_aberta = None;
@@ -976,6 +1058,13 @@ impl App {
                     self.favoritar_vod(titulo);
                 }
             }
+            // I abre a ficha: sinopse, duração, gêneros e elenco, sem abrir
+            // o filme para descobrir do que ele trata.
+            egui::Key::I => {
+                if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
+                    self.abrir_ficha(item.titulo, item.serie);
+                }
+            }
             _ => {}
         }
     }
@@ -1003,6 +1092,13 @@ impl App {
             egui::Key::S => {
                 if let Some(titulo) = self.titulo_em_foco() {
                     self.favoritar_vod(titulo);
+                }
+            }
+            // I abre a ficha: sinopse, duração, gêneros e elenco, sem abrir
+            // o filme para descobrir do que ele trata.
+            egui::Key::I => {
+                if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
+                    self.abrir_ficha(item.titulo, item.serie);
                 }
             }
             _ => {}
