@@ -16,16 +16,14 @@ cd "$(dirname "$0")"
 VERSAO=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 DLL="mpv/libmpv-2.dll"
 
-if [ "${1:-}" = "--baixar" ] || [ ! -f "$DLL" ]; then
-  mkdir -p mpv
-  echo "==> baixando a biblioteca do mpv"
-  url=$(curl -s https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest \
-    | python3 -c "import json,sys;d=json.load(sys.stdin);print([a['browser_download_url'] for a in d['assets'] if a['name'].startswith('mpv-dev-x86_64-2')][0])")
-  curl -sL -o mpv/dev.7z "$url"
-  7z x -y -ompv/extraido mpv/dev.7z >/dev/null
-  cp mpv/extraido/libmpv-2.dll "$DLL"
-  rm -rf mpv/extraido mpv/dev.7z
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --baixar) python3 scripts/verificar_mpv.py --baixar ;;
+    --assinado) [ -n "${SAIMO_ASSINAR:-}" ] || { echo 'Configure SAIMO_ASSINAR com o assinador autorizado antes de gerar uma distribuição assinada.'; exit 1; } ;;
+    *) echo "Opção desconhecida: $arg"; exit 1 ;;
+  esac
+done
+python3 scripts/verificar_mpv.py
 
 echo "==> compilando para Windows"
 cargo build --release --target x86_64-pc-windows-gnu -q
@@ -34,6 +32,9 @@ rm -rf dist/SaimoTV
 mkdir -p dist/SaimoTV
 cp target/x86_64-pc-windows-gnu/release/saimo-tv.exe "dist/SaimoTV/Saimo TV.exe"
 cp "$DLL" dist/SaimoTV/
+if [ -n "${SAIMO_ASSINAR:-}" ]; then
+  "$SAIMO_ASSINAR" "dist/SaimoTV/Saimo TV.exe"
+fi
 cat > dist/SaimoTV/LEIAME.txt <<TXT
 Saimo TV para Windows $VERSAO
 
@@ -68,6 +69,12 @@ wixl -a x64 --extdir instalador --ext ui -D Versao="$VERSAO" \
 printf '\r\n\r\n1252\t_ForceCodepage\r\n' > dist/_ForceCodepage.idt
 msibuild dist/SaimoTV-Instalador.msi -i dist/_ForceCodepage.idt
 rm -f dist/_ForceCodepage.idt
+if [ -n "${SAIMO_ASSINAR:-}" ]; then
+  "$SAIMO_ASSINAR" "dist/SaimoTV-Instalador.msi"
+else
+  echo 'AVISO: pacote de teste SEM assinatura de editor; não foi confirmado como falso positivo.'
+fi
+shasum -a 256 'dist/SaimoTV/Saimo TV.exe' dist/SaimoTV/libmpv-2.dll dist/SaimoTV-Instalador.msi > dist/SHA256SUMS.txt
 
 [ -f dist/SaimoTV-Instalador.msi ] || { echo "o instalador não foi gerado"; exit 1; }
 echo "pronto: dist/SaimoTV-Instalador.msi ($(du -h dist/SaimoTV-Instalador.msi | cut -f1))"

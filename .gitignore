@@ -1,3 +1,8 @@
 target/
 mpv/
 dist/
+auditoria/
+*.pfx
+*.p12
+__pycache__/
+*.pyc

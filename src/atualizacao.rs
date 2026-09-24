@@ -89,14 +89,47 @@ fn pelo_site() -> Option<Versao> {
     })
 }
 
-/// Abre no navegador padrão. `start` é o comando do próprio Windows.
+/// Só abre downloads HTTPS do repositório oficial, sem interpretador de comandos.
+fn link_oficial(link: &str) -> bool {
+    link.starts_with("https://github.com/gabrielsaimo/SaimoPlayer/releases/")
+        && !link.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+}
+
 pub fn abrir_no_navegador(link: &str) {
+    if !link_oficial(link) { return; }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("cmd").args(["/C", "start", "", link]).spawn();
+        use std::ffi::c_void;
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(hwnd: *mut c_void, operation: *const u16,
+                file: *const u16, parameters: *const u16, directory: *const u16,
+                show: i32) -> *mut c_void;
+        }
+        let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+        let url: Vec<u16> = link.encode_utf16().chain(Some(0)).collect();
+        let result = unsafe { ShellExecuteW(std::ptr::null_mut(), operation.as_ptr(),
+            url.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+        if result as isize <= 32 {
+            eprintln!("Não foi possível abrir o navegador (Windows: {}).", result as isize);
+        }
     }
     #[cfg(not(windows))]
     {
         let _ = std::process::Command::new("open").arg(link).spawn();
+    }
+}
+
+#[cfg(test)]
+mod testes_links {
+    use super::link_oficial;
+    #[test]
+    fn restringe_downloads_ao_repositorio_oficial() {
+        assert!(link_oficial("https://github.com/gabrielsaimo/SaimoPlayer/releases/download/v1.7.7/SaimoTV-Instalador.msi"));
+        for url in ["file:///C:/bad.exe", "https://github.com.evil.test/gabrielsaimo/SaimoPlayer/releases/",
+                    "https://github.com/gabrielsaimo/SaimoPlayer/releases/\ncalc.exe",
+                    "https://github.com/other/repo/releases/latest"] {
+            assert!(!link_oficial(url));
+        }
     }
 }
