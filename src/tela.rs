@@ -121,9 +121,7 @@ pub fn desenhar(app: &mut App, ctx: &egui::Context) {
     if app.ajuda_aberta {
         atalhos(app, ctx);
     }
-    if app.ficha_aberta.is_some() {
-        ficha_na_tela(app, ctx);
-    }
+
     atualizacao_na_tela(app, ctx);
 }
 
@@ -1248,6 +1246,12 @@ fn guia(app: &mut App, ctx: &egui::Context) {
 // MARK: - Acervo em grade
 
 fn acervo(app: &mut App, ctx: &egui::Context) {
+    if app.ficha_aberta.is_some() {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(Color32::BLACK))
+            .show(ctx, |ui| ficha_tela(app, ui));
+        return;
+    }
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(Color32::from_rgb(20, 20, 22)).inner_margin(egui::Margin::symmetric(24.0, 16.0)))
         .show(ctx, |ui| {
@@ -1639,6 +1643,22 @@ fn abrir_da_fileira(app: &mut App, fila: usize, indice: usize) {
     let visiveis = filas_na_tela(app);
     let Some((_, cartoes)) = visiveis.get(fila) else { return };
     let Some(cartao) = cartoes.get(indice) else { return };
+    // Destaque abre a ficha primeiro; "Continuar" e favoritos são de quem já
+    // sabe o que quer, e seguem direto.
+    if let Origem::Destaque(..) = cartao.origem {
+        let (titulo, serie) = (cartao.titulo.clone(), cartao.serie);
+        app.abrir_ficha(titulo, serie, crate::Destino::Fileira(fila, indice));
+        return;
+    }
+    seguir_fileira(app, fila, indice);
+}
+
+/// O caminho de um cartão da tela inicial até o título: é o que o "Assistir"
+/// da ficha de um destaque percorre.
+pub fn seguir_fileira(app: &mut App, fila: usize, indice: usize) {
+    let visiveis = filas_na_tela(app);
+    let Some((_, cartoes)) = visiveis.get(fila) else { return };
+    let Some(cartao) = cartoes.get(indice) else { return };
     let titulo = cartao.titulo.clone();
     match cartao.origem.clone() {
         Origem::Destaque(f, i) => {
@@ -1733,7 +1753,8 @@ fn grade(app: &mut App, ui: &mut egui::Ui) {
         if favoritar {
             app.favoritar_vod(itens[indice].titulo.clone());
         } else {
-            app.abrir_item(itens[indice].clone());
+            let item = itens[indice].clone();
+            app.abrir_ficha(item.titulo.clone(), item.serie, crate::Destino::Item(item));
         }
     }
 }
@@ -1950,193 +1971,408 @@ fn atalhos(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// A ficha de um título, numa janela sobre a grade.
-///
-/// Antes um cartaz na grade era só isso: um cartaz. Para saber do que o filme
-/// tratava, quanto durava ou quem estava nele, só abrindo — dois minutos de
-/// fonte, player e espera para descobrir que não era aquilo.
-///
-/// São os mesmos campos que o celular, o Mac e a TV Box mostram. O elenco leva
-/// a sério o clique: tocar num ator abre o que ele fez **e que existe neste
-/// acervo**, que é a única lista que vale de dentro do programa.
-fn ficha_na_tela(app: &mut App, ctx: &egui::Context) {
-    let Some((titulo, serie)) = app.ficha_aberta.clone() else { return };
-    let mut aberta = true;
-    let nome_da_janela = match &app.ficha_ator {
-        Some((_, nome)) => nome.clone(),
-        None => titulo.clone(),
-    };
-    let mut abrir_ator: Option<(u32, String)> = None;
-    let mut voltar_do_ator = false;
-    let mut abrir_titulo: Option<vod::Achado> = None;
+// MARK: - Ficha
 
-    egui::Window::new(egui::RichText::new(nome_da_janela).font(forte(15.0)))
-        .order(egui::Order::Foreground)
-        .collapsible(false)
-        .resizable(false)
-        .default_width(560.0)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .open(&mut aberta)
-        .frame(egui::Frame::window(&ctx.style()).fill(PAINEL).inner_margin(egui::Margin::same(18.0)))
-        .show(ctx, |ui| {
-            ui.set_max_height(520.0);
-            if app.ficha_ator.is_some() {
-                if ui.button(egui::RichText::new("‹ Voltar à ficha").font(normal(12.0))).clicked() {
-                    voltar_do_ator = true;
+/// A ficha de um título, no lugar da grade.
+///
+/// Antes era uma janelinha de texto sobre a grade. Agora é o que a TV Box e o
+/// Mac mostram: a imagem larga do filme ao fundo, escurecendo da esquerda para
+/// a direita, a capa, os números em selos, a sinopse, e o elenco em fotos
+/// redondas. Clicar num ator abre quem ele é e as capas de tudo que ele tem no
+/// acervo — e clicar numa dessas capas abre a ficha daquele título.
+fn ficha_tela(app: &mut App, ui: &mut egui::Ui) {
+    let area = ui.max_rect();
+    if app.ficha_ator.is_some() {
+        ator_tela(app, ui, area);
+        return;
+    }
+    let Some((titulo, serie)) = app.ficha_aberta.clone() else { return };
+    let ficha = app.ficha.clone();
+
+    // Fundo: a imagem larga, cortada para cobrir, e dois degradês por cima.
+    if let Some(url) = ficha.as_ref().and_then(|f| f.fundo.clone()) {
+        if let Some(textura) = app.imagem(&url, 1280) {
+            pintar_cobrindo(ui, &textura, area, 0.0, 0.5);
+        }
+    }
+    degrade(ui, area, Color32::from_black_alpha(248), Color32::from_black_alpha(40), true);
+    let pe = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - 280.0), area.max);
+    degrade(ui, pe, Color32::TRANSPARENT, Color32::from_black_alpha(235), false);
+
+    let mut acao: Option<AcaoDaFicha> = None;
+    let conteudo = area.shrink2(egui::vec2(40.0, 22.0));
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(conteudo), |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if botao_rotulo(ui, Icone::Voltar, "Voltar", "Voltar à grade (Esc)").clicked() {
+                acao = Some(AcaoDaFicha::Fechar);
+            }
+            ui.add_space(18.0);
+
+            ui.horizontal_top(|ui| {
+                // A capa
+                let (quadro, _) = ui.allocate_exact_size(egui::vec2(220.0, 330.0), Sense::hover());
+                ui.painter().rect_filled(quadro, 10.0, ELEVADO);
+                let endereco = ficha.as_ref().and_then(|f| f.capa.clone())
+                    .or_else(|| app.generos.capa(&titulo, serie).map(str::to_string));
+                match endereco.and_then(|u| app.imagem(&u, 342)) {
+                    Some(textura) => pintar_cobrindo(ui, &textura, quadro, 10.0, 0.5),
+                    None => {
+                        ui.painter().text(quadro.center(), Align2::CENTER_CENTER,
+                            titulo.chars().next().unwrap_or(' ').to_uppercase().to_string(),
+                            forte(58.0), AZUL);
+                    }
                 }
-                ui.add_space(8.0);
-                if app.filmografia_carregando {
-                    ui.label(egui::RichText::new("Procurando no acervo…").color(SECUNDARIO));
-                } else if app.filmografia.is_empty() {
-                    ui.label(egui::RichText::new("Nada desta pessoa no acervo.").color(SECUNDARIO));
-                    ui.label(
-                        egui::RichText::new("A filmografia mostra só o que dá para abrir daqui.")
-                            .font(normal(11.0))
-                            .color(TERCIARIO),
-                    );
-                } else {
-                    egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
-                        for achado in app.filmografia.clone() {
-                            let rotulo = if achado.serie { "Série" } else { "Filme" };
-                            let nome = if achado.ano.is_empty() {
-                                achado.titulo.clone()
-                            } else {
-                                format!("{} ({})", achado.titulo, achado.ano)
-                            };
-                            if ui
-                                .add(egui::Label::new(
-                                    egui::RichText::new(format!("{nome}  ·  {rotulo}"))
-                                        .font(normal(12.5)),
-                                ).sense(Sense::click()))
-                                .on_hover_text("Abrir")
-                                .clicked()
-                            {
-                                abrir_titulo = Some(achado.clone());
-                            }
-                            ui.add_space(4.0);
+                ui.add_space(30.0);
+
+                ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width()).min(720.0));
+                    ui.label(egui::RichText::new(if serie { "SÉRIE" } else { "FILME" })
+                        .font(forte(12.0)).color(AZUL));
+                    ui.label(egui::RichText::new(crate::generos::sem_ano(&titulo))
+                        .font(forte(34.0)).color(TEXTO));
+                    let Some(f) = ficha.as_ref() else {
+                        ui.add_space(10.0);
+                        let texto = if app.ficha_carregando { "Buscando a ficha…" } else { "Sem ficha para este título." };
+                        ui.label(egui::RichText::new(texto).color(SECUNDARIO));
+                        ui.add_space(14.0);
+                        if botao_ficha(ui, "▶  Assistir", true).clicked() {
+                            acao = Some(AcaoDaFicha::Assistir);
+                        }
+                        return;
+                    };
+                    if !f.frase.is_empty() {
+                        ui.label(egui::RichText::new(&f.frase).font(normal(15.0)).italics()
+                            .color(Color32::from_white_alpha(180)));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if f.nota > 0.0 { selo_da_ficha(ui, &format!("★ {:.1}", f.nota), AMARELO); }
+                        if !f.ano.is_empty() { selo_da_ficha(ui, &f.ano, TEXTO); }
+                        if let Some(m) = f.duracao {
+                            let texto = if serie { format!("{m} min/ep") }
+                                else if m >= 60 { format!("{}h {:02}min", m / 60, m % 60) }
+                                else { format!("{m} min") };
+                            selo_da_ficha(ui, &texto, TEXTO);
+                        }
+                        if let Some(n) = f.temporadas {
+                            selo_da_ficha(ui, &if n == 1 { "1 temporada".into() } else { format!("{n} temporadas") }, TEXTO);
+                        }
+                        if let Some(c) = f.classificacao.as_ref() {
+                            selo_da_ficha(ui, c, cor_da_classificacao(c));
                         }
                     });
-                }
-                return;
-            }
-
-            if app.ficha_carregando {
-                ui.label(egui::RichText::new("Buscando a ficha…").color(SECUNDARIO));
-                return;
-            }
-            let Some(ficha) = app.ficha.clone() else {
-                ui.label(egui::RichText::new("Sem ficha para este título.").color(SECUNDARIO));
-                return;
-            };
-            if ficha.vazia() {
-                ui.label(egui::RichText::new("Sem ficha para este título.").color(SECUNDARIO));
-                return;
-            }
-
-            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                let mut numeros: Vec<String> = Vec::new();
-                if !ficha.ano.is_empty() {
-                    numeros.push(ficha.ano.clone());
-                }
-                if let Some(minutos) = ficha.duracao {
-                    numeros.push(if serie {
-                        format!("{minutos} min/ep")
-                    } else {
-                        format!("{minutos} min")
+                    if !f.generos.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(f.generos.join("  ·  ")).font(normal(13.5))
+                            .color(Color32::from_white_alpha(170)));
+                    }
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        let andamento = !serie && progresso::onde_parou(&titulo).is_some();
+                        let rotulo = if serie { "▶  Ver episódios" }
+                            else if andamento { "▶  Continuar" } else { "▶  Assistir" };
+                        if botao_ficha(ui, rotulo, true).clicked() {
+                            acao = Some(AcaoDaFicha::Assistir);
+                        }
+                        ui.add_space(10.0);
+                        let marcado = app.favoritos_vod.iter().any(|t| *t == titulo);
+                        if botao_ficha(ui, if marcado { "★  Nos favoritos" } else { "☆  Favoritar" }, false).clicked() {
+                            acao = Some(AcaoDaFicha::Favoritar);
+                        }
                     });
-                }
-                if let Some(nota) = &ficha.classificacao {
-                    numeros.push(nota.clone());
-                }
-                if ficha.nota > 0.0 {
-                    numeros.push(format!("★ {:.1}", ficha.nota));
-                }
-                if !numeros.is_empty() {
-                    ui.label(
-                        egui::RichText::new(numeros.join("   ·   "))
-                            .font(forte(12.0))
-                            .color(SECUNDARIO),
-                    );
-                }
-                if !ficha.generos.is_empty() {
-                    ui.label(
-                        egui::RichText::new(ficha.generos.join(", "))
-                            .font(normal(11.5))
-                            .color(TERCIARIO),
-                    );
-                }
-                if !ficha.frase.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(&ficha.frase).font(normal(12.0)).italics().color(SECUNDARIO));
-                }
-                if !ficha.sinopse.is_empty() {
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Sinopse").font(forte(12.5)));
-                    ui.add_space(3.0);
-                    ui.label(egui::RichText::new(&ficha.sinopse).font(normal(12.0)).color(SECUNDARIO));
-                }
-                let creditos = [
-                    (if serie { "Criação" } else { "Direção" }, ficha.assinatura.clone()),
-                    ("Roteiro", ficha.roteiro.clone()),
-                    ("Produção", ficha.produtora.clone()),
-                ];
-                let creditos: Vec<_> = creditos.iter().filter(|(_, v)| !v.is_empty()).collect();
-                if !creditos.is_empty() {
-                    ui.add_space(10.0);
-                    for (rotulo, valor) in creditos {
+                    if !f.sinopse.is_empty() {
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new(&f.sinopse).font(normal(15.0))
+                            .color(Color32::from_white_alpha(230)));
+                    }
+                    let creditos = [
+                        (if serie { "Criação" } else { "Direção" }, f.assinatura.as_str()),
+                        ("Roteiro", f.roteiro.as_str()),
+                        ("Produção", f.produtora.as_str()),
+                    ];
+                    ui.add_space(8.0);
+                    for (rotulo, valor) in creditos.iter().filter(|(_, v)| !v.is_empty()) {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{rotulo}: ")).font(forte(11.5)));
-                            ui.label(egui::RichText::new(valor).font(normal(11.5)).color(SECUNDARIO));
+                            ui.label(egui::RichText::new(format!("{rotulo}:")).font(forte(13.0)).color(TEXTO));
+                            ui.label(egui::RichText::new(*valor).font(normal(13.0)).color(SECUNDARIO));
                         });
                     }
-                }
-                if !ficha.elenco.is_empty() {
-                    ui.add_space(12.0);
-                    ui.label(egui::RichText::new("Elenco").font(forte(12.5)));
-                    ui.add_space(4.0);
-                    for pessoa in &ficha.elenco {
-                        let texto = if pessoa.papel.is_empty() {
-                            pessoa.nome.clone()
-                        } else {
-                            format!("{}  ·  {}", pessoa.nome, pessoa.papel)
-                        };
-                        if ui
-                            .add(egui::Label::new(
-                                egui::RichText::new(texto).font(normal(12.0)),
-                            ).sense(Sense::click()))
-                            .on_hover_text(format!("Ver o que {} tem no acervo", pessoa.nome))
-                            .clicked()
-                        {
-                            abrir_ator = Some((pessoa.id, pessoa.nome.clone()));
-                        }
-                        ui.add_space(3.0);
-                    }
-                }
+                });
             });
-        });
 
-    if voltar_do_ator {
-        app.ficha_ator = None;
-        app.filmografia.clear();
-    }
-    if let Some((id, nome)) = abrir_ator {
-        app.abrir_ator(id, nome);
-    }
-    if let Some(achado) = abrir_titulo {
-        app.ficha_aberta = None;
-        app.ficha_ator = None;
-        app.abrir_item(crate::ItemNaTela {
-            titulo: achado.titulo.clone(),
-            detalhe: if achado.serie { "Série".into() } else { "Filme".into() },
-            serie: achado.serie,
-            letra: achado.letra.clone(),
+            // O elenco em fotos redondas
+            if let Some(f) = ficha.as_ref().filter(|f| !f.elenco.is_empty()) {
+                ui.add_space(26.0);
+                ui.label(egui::RichText::new("Elenco").font(forte(18.0)).color(TEXTO));
+                ui.add_space(10.0);
+                egui::ScrollArea::horizontal().id_salt("elenco").show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 18.0;
+                        for pessoa in &f.elenco {
+                            let foto = pessoa.foto.as_ref().and_then(|u| app.imagem(u, 185));
+                            let resposta = cartao_de_pessoa(ui, &pessoa.nome, &pessoa.papel, foto);
+                            if resposta.clicked() {
+                                acao = Some(AcaoDaFicha::Ator(pessoa.id, pessoa.nome.clone(), pessoa.foto.clone()));
+                            }
+                        }
+                    });
+                });
+            }
         });
+    });
+
+    match acao {
+        Some(AcaoDaFicha::Fechar) => app.fechar_ficha(),
+        Some(AcaoDaFicha::Assistir) => app.assistir_da_ficha(),
+        Some(AcaoDaFicha::Favoritar) => app.favoritar_vod(titulo),
+        Some(AcaoDaFicha::Ator(id, nome, foto)) => app.abrir_ator(id, nome, foto),
+        Some(AcaoDaFicha::Titulo(_)) | None => {}
     }
-    if !aberta {
-        app.ficha_aberta = None;
-        app.ficha_ator = None;
-        app.filmografia.clear();
+}
+
+enum AcaoDaFicha {
+    Fechar,
+    Assistir,
+    Favoritar,
+    Ator(u32, String, Option<String>),
+    Titulo(crate::vod::Achado),
+}
+
+/// Quem é a pessoa e as capas de tudo que ela tem no acervo.
+fn ator_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
+    let Some((_, nome)) = app.ficha_ator.clone() else { return };
+    ui.painter().rect_filled(area, 0.0, Color32::from_rgb(12, 26, 28));
+    let pe = Rect::from_min_max(Pos2::new(area.left(), area.top() + area.height() * 0.35), area.max);
+    degrade(ui, pe, Color32::TRANSPARENT, Color32::BLACK, false);
+
+    let perfil = app.perfil.clone();
+    let foto_url = perfil.as_ref().and_then(|p| p.foto.clone()).or_else(|| app.ficha_ator_foto.clone());
+    let trabalhos = app.filmografia.clone();
+    let mut acao: Option<AcaoDaFicha> = None;
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(area.shrink2(egui::vec2(40.0, 22.0))), |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if botao_rotulo(ui, Icone::Voltar, "Voltar à ficha", "Voltar (Esc)").clicked() {
+                acao = Some(AcaoDaFicha::Fechar);
+            }
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                // A foto grande só entra quando chega; até lá, a do elenco.
+                let lado = if perfil.as_ref().and_then(|p| p.foto.as_ref()).is_some() { 632 } else { 185 };
+                let foto = foto_url.as_ref().and_then(|u| app.imagem(u, lado))
+                    .or_else(|| app.ficha_ator_foto.clone().and_then(|u| app.imagem(&u, 185)));
+                let (circulo, _) = ui.allocate_exact_size(egui::vec2(140.0, 140.0), Sense::hover());
+                pintar_redondo(ui, circulo, foto, &nome);
+                ui.add_space(24.0);
+                ui.vertical(|ui| {
+                    ui.set_max_width(ui.available_width().min(860.0));
+                    let exibido = perfil.as_ref().map(|p| p.nome.clone()).filter(|n| !n.is_empty()).unwrap_or(nome.clone());
+                    ui.label(egui::RichText::new(exibido).font(forte(32.0)).color(TEXTO));
+                    if let Some(p) = perfil.as_ref() {
+                        if !p.dados.is_empty() {
+                            ui.label(egui::RichText::new(&p.dados).font(normal(14.0)).color(AZUL));
+                        }
+                        if !p.biografia.is_empty() {
+                            ui.add_space(6.0);
+                            let curta: String = p.biografia.chars().take(420).collect();
+                            let curta = if p.biografia.chars().count() > 420 { format!("{curta}…") } else { curta };
+                            ui.label(egui::RichText::new(curta).font(normal(13.5)).color(Color32::from_white_alpha(180)));
+                        }
+                    }
+                });
+            });
+            ui.add_space(22.0);
+            let contagem = if app.filmografia_carregando { "Procurando no acervo…".to_string() }
+                else if trabalhos.len() == 1 { "1 título no acervo".to_string() }
+                else { format!("{} títulos no acervo", trabalhos.len()) };
+            ui.label(egui::RichText::new(contagem).font(forte(19.0)).color(TEXTO));
+            if !app.filmografia_carregando && trabalhos.is_empty() {
+                ui.label(egui::RichText::new("Aparece aqui só o que dá para assistir neste app.")
+                    .font(normal(13.0)).color(SECUNDARIO));
+            }
+            ui.add_space(12.0);
+
+            // As capas, em quantas colunas couberem.
+            let largura = 150.0;
+            let espaco = 18.0;
+            let colunas = (((ui.available_width() + espaco) / (largura + espaco)).floor() as usize).max(1);
+            for linha in trabalhos.chunks(colunas) {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = espaco;
+                    for trabalho in linha {
+                        let capa = trabalho.capa.as_ref().and_then(|u| app.imagem(u, 185));
+                        let nome = if trabalho.achado.ano.is_empty() { trabalho.achado.titulo.clone() }
+                            else { format!("{} ({})", trabalho.achado.titulo, trabalho.achado.ano) };
+                        let papel = if trabalho.papel.is_empty() {
+                            if trabalho.achado.serie { "Série".to_string() } else { "Filme".to_string() }
+                        } else { trabalho.papel.clone() };
+                        if cartao_de_trabalho(ui, &nome, &papel, capa, largura).clicked() {
+                            acao = Some(AcaoDaFicha::Titulo(trabalho.achado.clone()));
+                        }
+                    }
+                });
+                ui.add_space(espaco);
+            }
+        });
+    });
+
+    match acao {
+        Some(AcaoDaFicha::Fechar) => {
+            app.ficha_ator = None;
+            app.filmografia.clear();
+        }
+        Some(AcaoDaFicha::Titulo(achado)) => {
+            let item = crate::ItemNaTela {
+                titulo: achado.titulo.clone(),
+                detalhe: if achado.serie { "Série".into() } else { "Filme".into() },
+                serie: achado.serie,
+                letra: achado.letra.clone(),
+            };
+            app.abrir_ficha(achado.titulo.clone(), achado.serie, crate::Destino::Item(item));
+        }
+        _ => {}
     }
+}
+
+/// Pinta a imagem cobrindo o retângulo, cortando o que sobra — como o
+/// `object-fit: cover` da web. `foco_y` diz de onde cortar na vertical: 0 é o
+/// topo (rosto de gente), 0,5 o meio.
+fn pintar_cobrindo(ui: &egui::Ui, textura: &egui::TextureHandle, alvo: Rect, cantos: f32, foco_y: f32) {
+    let [w, h] = textura.size();
+    let (w, h) = (w as f32, h as f32);
+    let razao_img = w / h.max(1.0);
+    let razao_alvo = alvo.width() / alvo.height().max(1.0);
+    let uv = if razao_img > razao_alvo {
+        let largura = razao_alvo / razao_img;
+        let x0 = (1.0 - largura) / 2.0;
+        Rect::from_min_max(Pos2::new(x0, 0.0), Pos2::new(x0 + largura, 1.0))
+    } else {
+        let altura = razao_img / razao_alvo;
+        let y0 = (1.0 - altura) * foco_y;
+        Rect::from_min_max(Pos2::new(0.0, y0), Pos2::new(1.0, y0 + altura))
+    };
+    egui::Image::new(textura).uv(uv).fit_to_exact_size(alvo.size()).rounding(cantos).paint_at(ui, alvo);
+}
+
+/// Um degradê de duas cores, na horizontal ou na vertical.
+fn degrade(ui: &egui::Ui, alvo: Rect, inicio: Color32, fim: Color32, horizontal: bool) {
+    let mut malha = egui::Mesh::default();
+    let (a, b, c, d) = if horizontal {
+        (inicio, fim, fim, inicio)
+    } else {
+        (inicio, inicio, fim, fim)
+    };
+    malha.colored_vertex(alvo.left_top(), a);
+    malha.colored_vertex(alvo.right_top(), b);
+    malha.colored_vertex(alvo.right_bottom(), c);
+    malha.colored_vertex(alvo.left_bottom(), d);
+    malha.add_triangle(0, 1, 2);
+    malha.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(malha));
+}
+
+fn selo_da_ficha(ui: &mut egui::Ui, texto: &str, cor: Color32) {
+    egui::Frame::none()
+        .fill(Color32::from_white_alpha(18))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(60)))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 4.0))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(texto).font(forte(13.0)).color(cor));
+        });
+}
+
+/// As cores da classificação indicativa brasileira, as mesmas do celular.
+fn cor_da_classificacao(nota: &str) -> Color32 {
+    match nota.to_uppercase().as_str() {
+        "L" => Color32::from_rgb(16, 185, 129),
+        "10" => Color32::from_rgb(59, 130, 246),
+        "12" => Color32::from_rgb(245, 158, 11),
+        "14" => Color32::from_rgb(249, 115, 22),
+        "16" | "18" => Color32::from_rgb(239, 68, 68),
+        _ => SECUNDARIO,
+    }
+}
+
+/// Botão da ficha: o principal é branco com texto escuro, como nas TVs.
+fn botao_ficha(ui: &mut egui::Ui, texto: &str, principal: bool) -> egui::Response {
+    let galeria = ui.fonts(|f| f.layout_no_wrap(texto.to_string(), forte(15.0), TEXTO));
+    let tamanho = egui::vec2(galeria.size().x + 48.0, 44.0);
+    let (rect, resposta) = ui.allocate_exact_size(tamanho, Sense::click());
+    let sobre = resposta.hovered();
+    let rect = if sobre { rect.expand(1.5) } else { rect };
+    let (fundo, cor) = if principal {
+        (if sobre { Color32::WHITE } else { Color32::from_white_alpha(235) }, Color32::from_rgb(12, 12, 14))
+    } else {
+        (Color32::from_white_alpha(if sobre { 48 } else { 32 }), TEXTO)
+    };
+    ui.painter().rect_filled(rect, 9.0, fundo);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, texto, forte(15.0), cor);
+    resposta.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn pintar_redondo(ui: &egui::Ui, circulo: Rect, foto: Option<egui::TextureHandle>, nome: &str) {
+    ui.painter().circle_filled(circulo.center(), circulo.width() / 2.0, Color32::from_white_alpha(22));
+    match foto {
+        Some(textura) => pintar_cobrindo(ui, &textura, circulo, circulo.width() / 2.0, 0.15),
+        None => {
+            ui.painter().text(circulo.center(), Align2::CENTER_CENTER,
+                nome.chars().next().unwrap_or(' ').to_uppercase().to_string(),
+                forte(circulo.width() * 0.36), SECUNDARIO);
+        }
+    }
+}
+
+fn cartao_de_pessoa(ui: &mut egui::Ui, nome: &str, papel: &str, foto: Option<egui::TextureHandle>) -> egui::Response {
+    let (rect, resposta) = ui.allocate_exact_size(egui::vec2(112.0, 150.0), Sense::click());
+    let sobre = resposta.hovered();
+    let lado = if sobre { 100.0 } else { 94.0 };
+    let circulo = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 50.0), egui::vec2(lado, lado));
+    pintar_redondo(ui, circulo, foto, nome);
+    if sobre {
+        ui.painter().circle_stroke(circulo.center(), lado / 2.0 + 2.0, Stroke::new(2.5, AZUL));
+    }
+    let texto = |t: &str, fonte: FontId, cor: Color32, y: f32| {
+        let mut job = egui::text::LayoutJob::simple(t.to_string(), fonte, cor, rect.width());
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+        job.halign = egui::Align::Center;
+        let galeria = ui.fonts(|f| f.layout_job(job));
+        ui.painter().galley(Pos2::new(rect.center().x, rect.top() + y), galeria, cor);
+    };
+    texto(nome, forte(12.5), TEXTO, 106.0);
+    texto(papel, normal(11.0), SECUNDARIO, 124.0);
+    resposta.on_hover_text(format!("Ver o que {nome} tem no acervo")).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn cartao_de_trabalho(ui: &mut egui::Ui, nome: &str, papel: &str,
+                      capa: Option<egui::TextureHandle>, largura: f32) -> egui::Response {
+    let altura_capa = largura * 1.5;
+    let (rect, resposta) = ui.allocate_exact_size(egui::vec2(largura, altura_capa + 44.0), Sense::click());
+    let sobre = resposta.hovered();
+    let quadro = Rect::from_min_size(rect.min, egui::vec2(largura, altura_capa));
+    let quadro = if sobre { quadro.expand(3.0) } else { quadro };
+    ui.painter().rect_filled(quadro, 8.0, ELEVADO);
+    match capa {
+        Some(textura) => pintar_cobrindo(ui, &textura, quadro, 8.0, 0.5),
+        None => {
+            ui.painter().text(quadro.center(), Align2::CENTER_CENTER,
+                nome.chars().next().unwrap_or(' ').to_uppercase().to_string(), forte(30.0), AZUL);
+        }
+    }
+    if sobre {
+        ui.painter().rect_stroke(quadro.expand(2.0), 10.0, Stroke::new(2.5, AZUL));
+    }
+    let texto = |t: &str, fonte: FontId, cor: Color32, y: f32| {
+        let mut job = egui::text::LayoutJob::simple(t.to_string(), fonte, cor, largura);
+        job.wrap.max_rows = 1;
+        job.wrap.overflow_character = Some('…');
+        let galeria = ui.fonts(|f| f.layout_job(job));
+        ui.painter().galley(Pos2::new(rect.left(), rect.top() + altura_capa + y), galeria, cor);
+    };
+    texto(nome, forte(12.5), TEXTO, 7.0);
+    texto(papel, normal(11.0), SECUNDARIO, 25.0);
+    resposta.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn atualizacao_na_tela(app: &mut App, ctx: &egui::Context) {

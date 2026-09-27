@@ -76,7 +76,9 @@ enum Recado {
     Ficha(String, bool, Option<ficha::Ficha>),
     /// Os trabalhos de um ator, como o TMDB os devolve. O cruzamento com o
     /// acervo é feito na thread do desenho, que é onde o índice está.
-    Filmografia(u32, Vec<(u32, bool)>),
+    Filmografia(u32, Vec<ficha::Credito>),
+    /// Quem é o ator aberto: foto, biografia, de onde é.
+    Perfil(u32, Option<ficha::Perfil>),
 }
 
 /// O que ocupa a área principal: o vídeo, ou uma das seções do acervo —
@@ -109,6 +111,20 @@ pub struct ItemNaTela {
     pub detalhe: String,
     pub serie: bool,
     pub letra: String,
+}
+
+/// Quantas capas grandes ficam na memória: bem mais que as de uma tela
+/// cheia, e ainda assim uns 200 MB no máximo.
+const MAXIMO_DE_CAPAS: usize = 280;
+
+/// Para onde o "Assistir" da ficha leva.
+///
+/// Um título da grade vai pelo caminho de sempre (`abrir_item`); um destaque
+/// da tela inicial, pelo dele — que sabe achar anime e dorama nas coleções.
+#[derive(Clone)]
+pub enum Destino {
+    Item(ItemNaTela),
+    Fileira(usize, usize),
 }
 
 /// O que está tocando quando não é canal: filme ou episódio.
@@ -145,7 +161,10 @@ struct App {
     mudo: bool,
     pausado: bool,
     logos: HashMap<String, Option<egui::TextureHandle>>,
-    pedidos_de_logo: Vec<String>,
+    /// Chave no mapa, endereço e o lado máximo em pixels.
+    pedidos_de_logo: Vec<(String, String, u32)>,
+    /// As capas grandes na ordem em que chegaram, para soltar as mais antigas.
+    ordem_das_capas: std::collections::VecDeque<String>,
     recados: Receiver<Recado>,
     emissor: Sender<Recado>,
     nova_versao: Option<atualizacao::Versao>,
@@ -193,13 +212,18 @@ struct App {
     ultimo_mouse: Option<egui::Pos2>,
     /// O título cuja ficha está aberta: nome, se é série e o detalhe do cartão.
     pub ficha_aberta: Option<(String, bool)>,
+    /// Para onde o "Assistir" da ficha aberta leva.
+    pub ficha_destino: Option<Destino>,
     /// A ficha já baixada do título aberto, quando chegou.
     pub ficha: Option<ficha::Ficha>,
     /// Enquanto o pedido não volta, a janela mostra que está a caminho.
     pub ficha_carregando: bool,
     /// O ator aberto dentro da ficha, e o que ele tem no acervo.
     pub ficha_ator: Option<(u32, String)>,
-    pub filmografia: Vec<vod::Achado>,
+    /// A foto pequena do elenco, que já está carregada: aparece na hora.
+    pub ficha_ator_foto: Option<String>,
+    pub perfil: Option<ficha::Perfil>,
+    pub filmografia: Vec<ficha::Trabalho>,
     pub filmografia_carregando: bool,
 }
 
@@ -293,6 +317,7 @@ impl App {
             pausado: false,
             logos: HashMap::new(),
             pedidos_de_logo: Vec::new(),
+            ordem_das_capas: std::collections::VecDeque::new(),
             recados,
             emissor,
             nova_versao: None,
@@ -329,9 +354,12 @@ impl App {
             preencher: false,
             ultimo_mouse: None,
             ficha_aberta: None,
+            ficha_destino: None,
             ficha: None,
             ficha_carregando: false,
             ficha_ator: None,
+            ficha_ator_foto: None,
+            perfil: None,
             filmografia: Vec::new(),
             filmografia_carregando: false,
         };
@@ -515,7 +543,8 @@ impl App {
     /// O pedido vai para uma thread; enquanto não volta, a janela já está no
     /// ar dizendo que está a caminho. Sem id do TMDB não há o que pedir — e é
     /// melhor dizer isso do que abrir uma janela que nunca preenche.
-    pub fn abrir_ficha(&mut self, titulo: String, serie: bool) {
+    pub fn abrir_ficha(&mut self, titulo: String, serie: bool, destino: Destino) {
+        self.ficha_destino = Some(destino);
         self.ficha_ator = None;
         self.filmografia.clear();
         self.ficha = ficha::conhecida(&titulo, serie);
@@ -536,17 +565,44 @@ impl App {
         });
     }
 
-    /// Abre, dentro da ficha, o que um ator tem neste acervo.
-    pub fn abrir_ator(&mut self, id: u32, nome: String) {
+    /// Abre, dentro da ficha, quem é o ator e o que ele tem neste acervo.
+    pub fn abrir_ator(&mut self, id: u32, nome: String, foto: Option<String>) {
         self.ficha_ator = Some((id, nome));
+        self.ficha_ator_foto = foto;
+        self.perfil = None;
         self.filmografia.clear();
         self.filmografia_carregando = true;
-        let emissor = self.emissor.clone();
-        // A rede vai para a thread; o cruzamento com o acervo é feito na
+        // A rede vai para threads; o cruzamento com o acervo é feito na
         // volta, aqui, que é onde o índice e as fichas moram.
+        let emissor = self.emissor.clone();
         std::thread::spawn(move || {
             let _ = emissor.send(Recado::Filmografia(id, ficha::creditos_de(id)));
         });
+        let emissor = self.emissor.clone();
+        std::thread::spawn(move || {
+            let _ = emissor.send(Recado::Perfil(id, ficha::perfil(id)));
+        });
+    }
+
+    /// "Assistir" na ficha: fecha a ficha e segue pelo caminho do título.
+    pub fn assistir_da_ficha(&mut self) {
+        let destino = self.ficha_destino.take();
+        self.fechar_ficha();
+        match destino {
+            Some(Destino::Item(item)) => self.abrir_item(item),
+            Some(Destino::Fileira(fila, indice)) => tela::seguir_fileira(self, fila, indice),
+            None => {}
+        }
+    }
+
+    /// Fecha a ficha e solta as imagens grandes dela: o fundo tem 1280 pixels
+    /// e ficaria na memória de vídeo para sempre a cada ficha aberta.
+    pub fn fechar_ficha(&mut self) {
+        self.ficha_aberta = None;
+        self.ficha_ator = None;
+        self.perfil = None;
+        self.filmografia.clear();
+        self.logos.retain(|chave, _| !chave.starts_with("1280|") && !chave.starts_with("632|"));
     }
 
     fn favoritar_vod(&mut self, titulo: String) {
@@ -567,7 +623,10 @@ impl App {
     /// lugar.
     fn capa(&mut self, titulo: &str, serie: bool) -> Option<egui::TextureHandle> {
         let endereco = self.generos.capa(titulo, serie)?.to_string();
-        self.logo(&endereco)
+        // 342 pixels, o tamanho que o arquivo de fichas publica: a capa era
+        // reduzida a 96, o tamanho das logos de canal, e ficava borrada num
+        // cartão de 150x225 — pior ainda em tela com escala de 150%.
+        self.imagem(&endereco, 342)
     }
 
     fn proxima_fonte_vod(&mut self, motivo: &str) {
@@ -754,6 +813,17 @@ impl App {
                 Recado::Restritos(lista) => self.trocar_lista(lista, true),
                 Recado::Logo(url, imagem) => {
                     let textura = ctx.load_texture(&url, imagem, egui::TextureOptions::LINEAR);
+                    if url.starts_with("342|") {
+                        self.ordem_das_capas.push_back(url.clone());
+                        // Cada capa em 342 pixels ocupa uns 700 KB. Rolando o
+                        // acervo inteiro isso cresceria sem fim; as mais
+                        // antigas saem e voltam da rede se aparecerem de novo.
+                        while self.ordem_das_capas.len() > MAXIMO_DE_CAPAS {
+                            if let Some(velha) = self.ordem_das_capas.pop_front() {
+                                self.logos.remove(&velha);
+                            }
+                        }
+                    }
                     self.logos.insert(url, Some(textura));
                 }
                 Recado::Atualizacao(v) => self.nova_versao = Some(v),
@@ -777,6 +847,11 @@ impl App {
                     if self.ficha_ator.as_ref().map(|(id, _)| *id) == Some(ator) {
                         self.filmografia = ficha::no_acervo(&creditos, &self.generos, &self.acervo);
                         self.filmografia_carregando = false;
+                    }
+                }
+                Recado::Perfil(ator, perfil) => {
+                    if self.ficha_ator.as_ref().map(|(id, _)| *id) == Some(ator) {
+                        self.perfil = perfil;
                     }
                 }
                 Recado::Filmes(letra, lista) => {
@@ -840,24 +915,34 @@ impl App {
     }
 
     fn logo(&mut self, url: &str) -> Option<egui::TextureHandle> {
-        if let Some(guardado) = self.logos.get(url) {
+        self.imagem(url, 96)
+    }
+
+    /// Uma imagem da rede, reduzida para caber em `lado` pixels.
+    ///
+    /// O carregador era só para logo de canal, e reduzia tudo a 96 pixels —
+    /// uma capa grande na ficha ficaria borrada. O tamanho entra na chave, então
+    /// a mesma capa pode existir pequena na grade e grande na ficha.
+    pub fn imagem(&mut self, url: &str, lado: u32) -> Option<egui::TextureHandle> {
+        let chave = if lado == 96 { url.to_string() } else { format!("{lado}|{url}") };
+        if let Some(guardado) = self.logos.get(&chave) {
             return guardado.clone();
         }
-        self.logos.insert(url.to_string(), None);
-        self.pedidos_de_logo.push(url.to_string());
+        self.logos.insert(chave.clone(), None);
+        self.pedidos_de_logo.push((chave, url.to_string(), lado));
         None
     }
 
     fn baixar_logos_pendentes(&mut self) {
-        for url in std::mem::take(&mut self.pedidos_de_logo) {
+        for (chave, url, lado) in std::mem::take(&mut self.pedidos_de_logo) {
             let emissor = self.emissor.clone();
             std::thread::spawn(move || {
-                let Some(bytes) = rede::bytes(&url, 4 * 1024 * 1024) else { return };
+                let Some(bytes) = rede::bytes(&url, 8 * 1024 * 1024) else { return };
                 let Ok(imagem) = image::load_from_memory(&bytes) else { return };
-                let imagem = imagem.thumbnail(96, 96).to_rgba8();
+                let imagem = imagem.thumbnail(lado, lado).to_rgba8();
                 let tamanho = [imagem.width() as usize, imagem.height() as usize];
                 let cores = egui::ColorImage::from_rgba_unmultiplied(tamanho, imagem.as_raw());
-                let _ = emissor.send(Recado::Logo(url, cores));
+                let _ = emissor.send(Recado::Logo(chave, cores));
             });
         }
     }
@@ -965,7 +1050,7 @@ impl App {
                             self.ficha_ator = None;
                             self.filmografia.clear();
                         } else {
-                            self.ficha_aberta = None;
+                            self.fechar_ficha();
                         }
                     } else if self.ajuda_aberta {
                         self.ajuda_aberta = false;
@@ -1062,7 +1147,7 @@ impl App {
             // o filme para descobrir do que ele trata.
             egui::Key::I => {
                 if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
-                    self.abrir_ficha(item.titulo, item.serie);
+                    self.abrir_ficha(item.titulo.clone(), item.serie, Destino::Item(item));
                 }
             }
             _ => {}
@@ -1098,7 +1183,7 @@ impl App {
             // o filme para descobrir do que ele trata.
             egui::Key::I => {
                 if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
-                    self.abrir_ficha(item.titulo, item.serie);
+                    self.abrir_ficha(item.titulo.clone(), item.serie, Destino::Item(item));
                 }
             }
             _ => {}
@@ -1253,8 +1338,10 @@ impl App {
             self.tocar_vod(titulo, episodio.urls, 0, true);
             return;
         }
+        // O título abre a ficha, como no celular e na TV Box: saber do que o
+        // filme trata antes de gastar dois minutos abrindo a fonte.
         if let Some(item) = self.itens_na_tela().get(self.foco_vod).cloned() {
-            self.abrir_item(item);
+            self.abrir_ficha(item.titulo.clone(), item.serie, Destino::Item(item));
         }
     }
 

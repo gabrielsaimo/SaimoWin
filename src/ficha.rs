@@ -44,6 +44,10 @@ pub struct Ficha {
     pub produtora: String,
     pub elenco: Vec<Pessoa>,
     pub capa: Option<String>,
+    /// A imagem larga do título, para o fundo da ficha.
+    pub fundo: Option<String>,
+    /// Quantas temporadas a série tem, segundo o TMDB.
+    pub temporadas: Option<u32>,
 }
 
 impl Ficha {
@@ -154,6 +158,12 @@ pub fn baixar(titulo: &str, serie: bool, id: u32) -> Option<Ficha> {
             .to_string(),
         elenco,
         capa: json["poster_path"].as_str().map(|c| format!("{IMAGENS}w342{c}")),
+        fundo: json["backdrop_path"].as_str().map(|c| format!("{IMAGENS}w1280{c}")),
+        temporadas: if serie {
+            json["number_of_seasons"].as_u64().filter(|n| *n > 0).map(|n| n as u32)
+        } else {
+            None
+        },
     };
 
     if let Ok(mut mapa) = guardadas().lock() {
@@ -162,12 +172,31 @@ pub fn baixar(titulo: &str, serie: bool, id: u32) -> Option<Ficha> {
     Some(ficha)
 }
 
-/// Os trabalhos de um ator, como o TMDB os devolve: id e se é série.
+/// Um trabalho de uma pessoa, como o TMDB o devolve.
+#[derive(Clone, Debug)]
+pub struct Credito {
+    pub id: u32,
+    pub serie: bool,
+    /// A capa que o TMDB já manda junto — a do arquivo de fichas falta para
+    /// boa parte da filmografia.
+    pub capa: Option<String>,
+    pub papel: String,
+}
+
+/// Um trabalho que existe no acervo, pronto para desenhar e abrir.
+#[derive(Clone, Debug)]
+pub struct Trabalho {
+    pub achado: crate::vod::Achado,
+    pub capa: Option<String>,
+    pub papel: String,
+}
+
+/// Os trabalhos de um ator, em ordem de popularidade.
 ///
 /// Só a ida à rede mora aqui. O cruzamento com o acervo é local e acontece na
 /// thread do desenho, onde estão o índice e as fichas — mandar a rede junto
 /// congelaria a janela pelo tempo do pedido.
-pub fn creditos_de(ator: u32) -> Vec<(u32, bool)> {
+pub fn creditos_de(ator: u32) -> Vec<Credito> {
     let Some(json) = crate::rede::json(&format!(
         "{BASE}/person/{ator}/combined_credits?api_key={CHAVE}&language=pt-BR"
     )) else {
@@ -180,8 +209,6 @@ pub fn creditos_de(ator: u32) -> Vec<(u32, bool)> {
             trabalhos.extend(lista.iter());
         }
     }
-    // Ordem de popularidade: o que a pessoa é mais conhecida por fazer vem
-    // primeiro, e não a ordem em que o TMDB devolveu.
     trabalhos.sort_by(|a, b| {
         b["popularity"]
             .as_f64()
@@ -195,9 +222,21 @@ pub fn creditos_de(ator: u32) -> Vec<(u32, bool)> {
     for trabalho in trabalhos {
         let Some(id) = trabalho["id"].as_u64() else { continue };
         let serie = trabalho["media_type"].as_str() == Some("tv");
-        if vistos.insert((id as u32, serie)) {
-            saida.push((id as u32, serie));
+        if !vistos.insert((id as u32, serie)) {
+            continue;
         }
+        let papel = trabalho["character"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .or_else(|| trabalho["job"].as_str())
+            .unwrap_or("")
+            .to_string();
+        saida.push(Credito {
+            id: id as u32,
+            serie,
+            capa: trabalho["poster_path"].as_str().map(|c| format!("{IMAGENS}w185{c}")),
+            papel,
+        });
     }
     saida
 }
@@ -209,10 +248,10 @@ pub fn creditos_de(ator: u32) -> Vec<(u32, bool)> {
 /// cruzamento é pelo id do TMDB, que o arquivo de fichas já traz para cada
 /// título daqui — nome igual não engana, refilmagem não vira o original.
 pub fn no_acervo(
-    creditos: &[(u32, bool)],
+    creditos: &[Credito],
     generos: &crate::generos::Generos,
     acervo: &[crate::vod::Achado],
-) -> Vec<crate::vod::Achado> {
+) -> Vec<Trabalho> {
     let mut por_nome: HashMap<String, &crate::vod::Achado> = HashMap::new();
     for achado in acervo {
         por_nome.insert(chave(&achado.titulo, achado.serie), achado);
@@ -220,18 +259,90 @@ pub fn no_acervo(
 
     let mut vistos: HashSet<String> = HashSet::new();
     let mut saida = Vec::new();
-    for (id, serie) in creditos {
-        let Some(titulo) = generos.titulo_de(*id, *serie) else { continue };
+    for credito in creditos {
+        let Some(titulo) = generos.titulo_de(credito.id, credito.serie) else { continue };
         let achado = por_nome
-            .get(&chave(titulo, *serie))
-            .or_else(|| por_nome.get(&chave(&crate::generos::sem_ano(titulo), *serie)));
+            .get(&chave(titulo, credito.serie))
+            .or_else(|| por_nome.get(&chave(&crate::generos::sem_ano(titulo), credito.serie)));
         let Some(achado) = achado else { continue };
         if !vistos.insert(chave(&achado.titulo, achado.serie)) {
             continue;
         }
-        saida.push((*achado).clone());
+        let capa = credito
+            .capa
+            .clone()
+            .or_else(|| generos.capa(&achado.titulo, achado.serie).map(str::to_string));
+        saida.push(Trabalho { achado: (*achado).clone(), capa, papel: credito.papel.clone() });
     }
     saida
+}
+
+/// Quem é a pessoa: foto grande, biografia, nascimento, de onde é.
+#[derive(Clone, Debug, Default)]
+pub struct Perfil {
+    pub nome: String,
+    pub foto: Option<String>,
+    pub biografia: String,
+    /// "Atuação  ·  1956 · 70 anos  ·  Concord, California, USA"
+    pub dados: String,
+}
+
+/// A biografia em português falta para quase todo mundo que não é
+/// brasileiro; sem ela vale a em inglês — melhor que um vazio sob a foto.
+pub fn perfil(id: u32) -> Option<Perfil> {
+    let json = crate::rede::json(&format!("{BASE}/person/{id}?api_key={CHAVE}&language=pt-BR"))?;
+    let texto = |campo: &str| json[campo].as_str().unwrap_or("").to_string();
+    let mut biografia = texto("biography");
+    if biografia.is_empty() {
+        if let Some(ingles) =
+            crate::rede::json(&format!("{BASE}/person/{id}?api_key={CHAVE}&language=en-US"))
+        {
+            biografia = ingles["biography"].as_str().unwrap_or("").to_string();
+        }
+    }
+    let mut partes: Vec<String> = Vec::new();
+    let conhecida = match json["known_for_department"].as_str() {
+        Some("Acting") => "Atuação",
+        Some("Directing") => "Direção",
+        Some("Writing") => "Roteiro",
+        Some("Production") => "Produção",
+        Some("Sound") => "Música",
+        _ => "",
+    };
+    if !conhecida.is_empty() {
+        partes.push(conhecida.to_string());
+    }
+    let nasceu: Option<i32> = texto("birthday").get(..4).and_then(|a| a.parse().ok());
+    let morreu: Option<i32> = texto("deathday").get(..4).and_then(|a| a.parse().ok());
+    if let Some(nasceu) = nasceu {
+        match morreu {
+            Some(morreu) => partes.push(format!("{nasceu} – {morreu}")),
+            None => {
+                let agora = ano_atual();
+                partes.push(format!("{nasceu} · {} anos", agora - nasceu));
+            }
+        }
+    }
+    let local = texto("place_of_birth");
+    if !local.is_empty() {
+        partes.push(local);
+    }
+    Some(Perfil {
+        nome: texto("name"),
+        foto: json["profile_path"].as_str().map(|c| format!("{IMAGENS}h632{c}")),
+        biografia,
+        dados: partes.join("  ·  "),
+    })
+}
+
+/// O ano de agora, sem trazer uma biblioteca de datas só para isso.
+fn ano_atual() -> i32 {
+    let segundos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 365,2425 dias por ano: o erro não chega a um dia em séculos.
+    1970 + (segundos as f64 / 31_556_952.0) as i32
 }
 
 fn classificacao_br(json: &serde_json::Value, serie: bool) -> Option<String> {
