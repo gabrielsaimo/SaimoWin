@@ -18,6 +18,7 @@ mod ficha;
 mod catalogo;
 mod mpv;
 mod progresso;
+mod pulos;
 mod rede;
 mod telemetria;
 
@@ -79,6 +80,8 @@ enum Recado {
     Filmografia(u32, Vec<ficha::Credito>),
     /// Quem é o ator aberto: foto, biografia, de onde é.
     Perfil(u32, Option<ficha::Perfil>),
+    /// Onde pular no que está tocando, pelo TheIntroDB.
+    Marcas(String, pulos::Marcas),
 }
 
 /// O que ocupa a área principal: o vídeo, ou uma das seções do acervo —
@@ -134,7 +137,48 @@ pub struct TocandoVod {
     pub fonte: usize,
     pub desde: Instant,
     pub confirmado: bool,
+    /// Quando é episódio: a série, o número e a lista para achar o seguinte.
+    pub episodio: Option<EpisodioTocando>,
+    /// Abertura, recapitulação e créditos, quando o TheIntroDB conhece.
+    pub marcas: Option<pulos::Marcas>,
+    /// A última posição vista (posição, duração): no fim o mpv já não diz.
+    pub visto: (f64, f64),
+    /// O cartão do próximo episódio: quando subiu, e se foi dispensado.
+    pub proximo_desde: Option<Instant>,
+    pub proximo_dispensado: bool,
 }
+
+#[derive(Clone)]
+pub struct EpisodioTocando {
+    pub serie: String,
+    pub temporada: u32,
+    pub numero: u32,
+    pub versao: String,
+    pub lista: Vec<vod::Episodio>,
+}
+
+impl EpisodioTocando {
+    /// O episódio seguinte, de preferência na mesma versão (dublado/legendado).
+    pub fn seguinte(&self) -> Option<vod::Episodio> {
+        let agora = (self.temporada, self.numero);
+        let chave = self
+            .lista
+            .iter()
+            .map(|e| (e.temporada, e.numero))
+            .filter(|k| *k > agora)
+            .min()?;
+        let candidatos: Vec<&vod::Episodio> =
+            self.lista.iter().filter(|e| (e.temporada, e.numero) == chave).collect();
+        candidatos
+            .iter()
+            .find(|e| e.versao == self.versao)
+            .or_else(|| candidatos.first())
+            .map(|e| (*e).clone())
+    }
+}
+
+/// Quanto tempo o cartão do próximo episódio espera antes de seguir sozinho.
+pub const ESPERA_DO_PROXIMO: Duration = Duration::from_secs(10);
 
 pub struct Tocando {
     pub canal: usize,
@@ -210,6 +254,9 @@ struct App {
     velocidade: f32,
     preencher: bool,
     ultimo_mouse: Option<egui::Pos2>,
+    /// Já voltou ao último canal nesta abertura: a lista recarrega e não pode
+    /// arrancar a pessoa do que ela escolheu depois.
+    retomou_canal: bool,
     /// O título cuja ficha está aberta: nome, se é série e o detalhe do cartão.
     pub ficha_aberta: Option<(String, bool)>,
     /// Para onde o "Assistir" da ficha aberta leva.
@@ -353,6 +400,7 @@ impl App {
             velocidade: 1.0,
             preencher: false,
             ultimo_mouse: None,
+            retomou_canal: false,
             ficha_aberta: None,
             ficha_destino: None,
             ficha: None,
@@ -431,6 +479,23 @@ impl App {
         }
         self.reordenar();
         self.pedir_guia();
+        self.voltar_ao_ultimo_canal();
+    }
+
+    /// Abre no canal que estava no ar quando o programa fechou, como a TV.
+    fn voltar_ao_ultimo_canal(&mut self) {
+        if self.retomou_canal || self.tocando.is_some() || self.tocando_vod.is_some() || self.mpv.is_none() {
+            return;
+        }
+        let Some(nome) = ler_lista("ultimo-canal.txt").into_iter().next() else {
+            self.retomou_canal = true;
+            return;
+        };
+        // A restrita chega depois: espera por ela se o canal é de lá.
+        let Some(indice) = self.canais.iter().position(|c| c.nome == nome) else { return };
+        self.retomou_canal = true;
+        self.foco = indice;
+        self.tocar(indice, 0, true);
     }
 
     // MARK: - Filmes e séries
@@ -502,16 +567,146 @@ impl App {
         self.pausado = false;
         self.tocando = None;
         telemetria::comecou("vod", &titulo, &url, fonte + 1, nova);
+        // Trocar de fonte do mesmo título mantém o episódio e as marcas.
+        let (episodio, marcas) = self
+            .tocando_vod
+            .take()
+            .filter(|t| t.titulo == titulo)
+            .map(|t| (t.episodio, t.marcas))
+            .unwrap_or((None, None));
         self.tocando_vod = Some(TocandoVod {
             titulo,
             urls,
             fonte,
             desde: Instant::now(),
             confirmado: false,
+            episodio,
+            marcas,
+            visto: (0.0, 0.0),
+            proximo_desde: None,
+            proximo_dispensado: false,
         });
         self.letreiro_ate = Instant::now() + SUMIR_LETREIRO;
         self.aba = Aba::Canais;
         self.mostrar_controles();
+    }
+
+    fn tocar_episodio(&mut self, serie: &str, episodio: vod::Episodio, lista: Vec<vod::Episodio>) {
+        let titulo = format!("{} · T{} E{}", serie, episodio.temporada, episodio.numero);
+        // Some antes de tocar: senão a troca de título apagaria o episódio.
+        self.tocando_vod = None;
+        self.tocar_vod(titulo.clone(), episodio.urls.clone(), 0, true);
+        let Some(t) = self.tocando_vod.as_mut() else { return };
+        t.episodio = Some(EpisodioTocando {
+            serie: serie.to_string(),
+            temporada: episodio.temporada,
+            numero: episodio.numero,
+            versao: episodio.versao.clone(),
+            lista,
+        });
+        self.pedir_marcas(titulo, self.generos.id(serie, true), episodio.temporada, episodio.numero);
+    }
+
+    /// Busca as marcas de pular numa thread; chegam pelo recado.
+    fn pedir_marcas(&self, titulo: String, tmdb: Option<u32>, temporada: u32, numero: u32) {
+        let Some(tmdb) = tmdb else { return };
+        let emissor = self.emissor.clone();
+        std::thread::spawn(move || {
+            if let Some(marcas) = pulos::buscar(tmdb, temporada, numero) {
+                let _ = emissor.send(Recado::Marcas(titulo, marcas));
+            }
+        });
+    }
+
+    /// O trecho que dá para pular agora, se houver.
+    pub fn pulo_na_tela(&self) -> Option<pulos::Trecho> {
+        let t = self.tocando_vod.as_ref()?;
+        let (posicao, duracao) = t.visto;
+        t.marcas.as_ref()?.em(posicao, duracao).cloned()
+    }
+
+    pub fn pular_trecho(&mut self) {
+        let Some(trecho) = self.pulo_na_tela() else { return };
+        let duracao = self.tocando_vod.as_ref().map(|t| t.visto.1).unwrap_or(0.0);
+        match trecho.fim {
+            Some(fim) => self.ir_para(fim),
+            // Até o fim do vídeo: é o mesmo que acabar.
+            None => self.ir_para((duracao - 1.0).max(0.0)),
+        }
+    }
+
+    /// O episódio seguinte, quando o cartão dele está à vista.
+    pub fn proximo_na_tela(&self) -> Option<(vod::Episodio, u64)> {
+        let t = self.tocando_vod.as_ref()?;
+        let desde = t.proximo_desde?;
+        if t.proximo_dispensado {
+            return None;
+        }
+        let seguinte = t.episodio.as_ref()?.seguinte()?;
+        let resta = ESPERA_DO_PROXIMO.saturating_sub(desde.elapsed()).as_secs() + 1;
+        Some((seguinte, resta))
+    }
+
+    pub fn tocar_proximo(&mut self) -> bool {
+        let Some(t) = self.tocando_vod.as_ref() else { return false };
+        let Some(ep) = t.episodio.clone() else { return false };
+        let Some(seguinte) = ep.seguinte() else { return false };
+        // O que acabou não fica no "continuar assistindo".
+        progresso::esquecer(&t.titulo);
+        self.tocar_episodio(&ep.serie, seguinte, ep.lista);
+        true
+    }
+
+    pub fn dispensar_proximo(&mut self) {
+        if let Some(t) = self.tocando_vod.as_mut() {
+            t.proximo_dispensado = true;
+        }
+    }
+
+    /// Enter com o botão de pular ou o cartão do próximo à vista.
+    fn acao_na_tela(&mut self) -> bool {
+        if self.pulo_na_tela().is_some() {
+            self.pular_trecho();
+            return true;
+        }
+        if self.proximo_na_tela().is_some() {
+            return self.tocar_proximo();
+        }
+        false
+    }
+
+    /// Posição, cartão do próximo episódio e a volta sozinha, a cada quadro.
+    fn acompanhar_vod(&mut self) {
+        let Some(mpv) = self.mpv.as_ref() else { return };
+        let visto = mpv.posicao();
+        let Some(t) = self.tocando_vod.as_mut() else { return };
+        if !t.confirmado {
+            return;
+        }
+        if let Some(v) = visto {
+            t.visto = v;
+        }
+        let (posicao, duracao) = t.visto;
+        let tem_seguinte = t.episodio.as_ref().and_then(|e| e.seguinte()).is_some();
+        if !tem_seguinte || t.proximo_dispensado {
+            return;
+        }
+        // Os créditos marcados; sem marca, os últimos 30 s de um episódio.
+        let creditos = t
+            .marcas
+            .as_ref()
+            .and_then(|m| m.creditos())
+            .unwrap_or(if duracao > 300.0 { duracao - 30.0 } else { f64::MAX });
+        if posicao >= creditos && t.proximo_desde.is_none() {
+            t.proximo_desde = Some(Instant::now());
+        } else if posicao < creditos - 5.0 {
+            // Voltou para antes dos créditos: o cartão some.
+            t.proximo_desde = None;
+        }
+        let venceu = t.proximo_desde.map(|d| d.elapsed() >= ESPERA_DO_PROXIMO).unwrap_or(false);
+        if venceu && !self.pausado {
+            self.tocar_proximo();
+        }
     }
 
     /// Grava onde o filme parou. `agora` força, em vez de esperar os 15 s.
@@ -716,8 +911,19 @@ impl App {
                     mpv::Aviso::Falhou => self.proxima_fonte_vod("mpv: erro na fonte"),
                     // Filme que termina é fim mesmo; canal que termina é fonte caindo.
                     mpv::Aviso::Fim => {
-                        let acabou = self.tocando_vod.as_ref().map(|t| t.confirmado).unwrap_or(false);
-                        if acabou {
+                        let (acabou, visto) = self
+                            .tocando_vod
+                            .as_ref()
+                            .map(|t| (t.confirmado, t.visto))
+                            .unwrap_or((false, (0.0, 0.0)));
+                        // "Terminar" nos primeiros segundos é fonte quebrada, não
+                        // fim de filme: tenta a próxima em vez de fechar.
+                        let cedo = visto.0 < 30.0 || (visto.1 > 0.0 && visto.1 < 120.0);
+                        if acabou && cedo {
+                            self.proxima_fonte_vod(&format!("terminou em {} s", visto.0 as u64));
+                        } else if acabou && self.tocar_proximo() {
+                            // Série: o episódio seguinte já está a caminho.
+                        } else if acabou {
                             // Chegou ao fim: nada a retomar da próxima vez.
                             if let Some(filme) = self.tocando_vod.as_ref() {
                                 progresso::esquecer(&filme.titulo);
@@ -739,7 +945,9 @@ impl App {
                             t.confirmado = true;
                             let ms = t.desde.elapsed().as_millis();
                             let (canal, fonte) = (t.canal, t.fonte);
+                            self.retomou_canal = true;
                             if let Some(c) = self.canais.get(canal) {
+                                gravar_lista("ultimo-canal.txt", &[c.nome.clone()]);
                                 let url = c.fontes.get(fonte).map(|f| f.url.clone()).unwrap_or_default();
                                 telemetria::tocou("live", &c.nome, &url, fonte + 1, ms);
                             }
@@ -770,6 +978,7 @@ impl App {
         if self.tocando.is_some() || self.tocando_vod.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
+        self.acompanhar_vod();
         self.contar_video();
         self.guardar_progresso(false);
     }
@@ -847,6 +1056,11 @@ impl App {
                     if self.ficha_ator.as_ref().map(|(id, _)| *id) == Some(ator) {
                         self.filmografia = ficha::no_acervo(&creditos, &self.generos, &self.acervo);
                         self.filmografia_carregando = false;
+                    }
+                }
+                Recado::Marcas(titulo, marcas) => {
+                    if let Some(t) = self.tocando_vod.as_mut().filter(|t| t.titulo == titulo) {
+                        t.marcas = Some(marcas);
                     }
                 }
                 Recado::Perfil(ator, perfil) => {
@@ -1012,6 +1226,17 @@ impl App {
             if escrevendo && matches!(key, egui::Key::Escape | egui::Key::Enter | egui::Key::ArrowDown) {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::NULL));
                 if key != egui::Key::Enter {
+                    continue;
+                }
+            }
+            // Enter com o botão de pular à vista faz o que o botão diz; Esc
+            // dispensa o cartão do próximo episódio.
+            if self.aba == Aba::Canais && self.tocando_vod.is_some() {
+                if key == egui::Key::Enter && self.acao_na_tela() {
+                    continue;
+                }
+                if key == egui::Key::Escape && self.proximo_na_tela().is_some() {
+                    self.dispensar_proximo();
                     continue;
                 }
             }
@@ -1334,8 +1559,8 @@ impl App {
     pub fn abrir_do_acervo(&mut self) {
         if let Some(serie) = self.serie_aberta.clone() {
             let Some(episodio) = self.episodios.get(self.foco_vod).cloned() else { return };
-            let titulo = format!("{} · T{} E{}", serie.titulo, episodio.temporada, episodio.numero);
-            self.tocar_vod(titulo, episodio.urls, 0, true);
+            let lista = self.episodios.clone();
+            self.tocar_episodio(&serie.titulo, episodio, lista);
             return;
         }
         // O título abre a ficha, como no celular e na TV Box: saber do que o

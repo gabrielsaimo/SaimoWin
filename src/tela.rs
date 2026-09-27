@@ -770,6 +770,9 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                 return;
             }
 
+            // Fora da regra dos controles: o botão de pular só serve na hora.
+            pulos_na_tela(app, ui, area);
+
             if !app.controles_visiveis() {
                 return;
             }
@@ -804,6 +807,61 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                     faixa_no_ar(app, ui);
                 });
         });
+}
+
+/// "Pular abertura" e o cartão do próximo episódio, no canto de baixo.
+///
+/// Os tempos vêm do TheIntroDB. Enter faz o que o botão diz; Esc dispensa o
+/// cartão do próximo episódio.
+fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
+    let acima_da_barra = if app.controles_visiveis() { 16.0 + 48.0 + 96.0 } else { 40.0 };
+    let base = Pos2::new(area.right() - 32.0, area.bottom() - acima_da_barra);
+
+    if let Some(trecho) = app.pulo_na_tela() {
+        let caixa = Rect::from_min_max(base - egui::vec2(230.0, 48.0), base);
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(caixa), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
+                let botao = egui::Button::new(
+                    egui::RichText::new(format!("{} · Enter", trecho.tipo.rotulo())).font(forte(15.0)).color(Color32::BLACK),
+                )
+                .fill(Color32::WHITE)
+                .rounding(10.0)
+                .min_size(egui::vec2(0.0, 44.0));
+                if ui.add(botao).on_hover_text("Enter").clicked() {
+                    app.pular_trecho();
+                }
+            });
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        return;
+    }
+
+    let Some((seguinte, resta)) = app.proximo_na_tela() else { return };
+    let caixa = Rect::from_min_max(base - egui::vec2(340.0, 112.0), base);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(caixa), |ui| {
+        egui::Frame::none().fill(VIDRO).rounding(14.0).inner_margin(egui::Margin::same(16.0)).show(ui, |ui| {
+            ui.set_width(308.0);
+            ui.label(egui::RichText::new(format!("Próximo episódio em {resta} s")).font(normal(12.5)).color(SECUNDARIO));
+            ui.label(
+                egui::RichText::new(format!("Temporada {} · Episódio {}", seguinte.temporada, seguinte.numero))
+                    .font(forte(16.0))
+                    .color(TEXTO),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let assistir = egui::Button::new(egui::RichText::new("Assistir agora · Enter").font(forte(13.5)).color(Color32::BLACK))
+                    .fill(Color32::WHITE)
+                    .rounding(8.0);
+                if ui.add(assistir).clicked() {
+                    app.tocar_proximo();
+                }
+                if ui.add(egui::Button::new(egui::RichText::new("Continuar vendo · Esc").font(normal(13.0))).rounding(8.0)).clicked() {
+                    app.dispensar_proximo();
+                }
+            });
+        });
+    });
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
 }
 
 fn estado_vazio(app: &mut App, ui: &mut egui::Ui, area: Rect) {
