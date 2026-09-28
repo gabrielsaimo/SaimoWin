@@ -13,7 +13,6 @@ const BASE: &str = "https://raw.githubusercontent.com/gabrielsaimo/SaimoPlayer/m
 pub struct Gaveta {
     pub letra: String,
     pub filmes: usize,
-    pub series: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +71,6 @@ pub fn indice() -> Vec<Gaveta> {
             gavetas.push(Gaveta {
                 letra: campos[0].to_string(),
                 filmes: campos[1].parse().unwrap_or(0),
-                series: campos[2].parse().unwrap_or(0),
             });
         }
     }

@@ -29,7 +29,6 @@ pub struct Pessoa {
 
 #[derive(Clone, Debug, Default)]
 pub struct Ficha {
-    pub titulo: String,
     pub sinopse: String,
     pub frase: String,
     /// Minutos: do filme, ou de um episódio da série.
@@ -48,15 +47,6 @@ pub struct Ficha {
     pub fundo: Option<String>,
     /// Quantas temporadas a série tem, segundo o TMDB.
     pub temporadas: Option<u32>,
-}
-
-impl Ficha {
-    pub fn vazia(&self) -> bool {
-        self.sinopse.is_empty()
-            && self.elenco.is_empty()
-            && self.generos.is_empty()
-            && self.duracao.is_none()
-    }
 }
 
 fn guardadas() -> &'static Mutex<HashMap<String, Ficha>> {
@@ -137,7 +127,6 @@ pub fn baixar(titulo: &str, serie: bool, id: u32) -> Option<Ficha> {
     .map(|m| m as u32);
 
     let ficha = Ficha {
-        titulo: texto(if serie { "name" } else { "title" }),
         sinopse: texto("overview"),
         frase: texto("tagline"),
         duracao,

@@ -46,7 +46,7 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
     let mut achou = false;
     for (nome, caminho) in candidatas {
         if let Ok(bytes) = std::fs::read(caminho) {
-            fontes.font_data.insert(nome.into(), egui::FontData::from_owned(bytes));
+            fontes.font_data.insert(nome.into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
             achou = true;
         }
     }
@@ -65,12 +65,12 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
     }
     ctx.set_fonts(fontes);
 
-    let mut estilo = (*ctx.style()).clone();
+    let mut estilo = (*ctx.global_style()).clone();
     let mut visual = egui::Visuals::dark();
     visual.panel_fill = PAINEL;
     visual.window_fill = PAINEL;
     visual.window_stroke = Stroke::new(1.0, LINHA);
-    visual.window_rounding = 12.0.into();
+    visual.window_corner_radius = 12.0.into();
     visual.extreme_bg_color = ELEVADO;
     visual.faint_bg_color = ELEVADO;
     visual.selection.bg_fill = ACENTO.gamma_multiply(0.45);
@@ -84,7 +84,7 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
         &mut visual.widgets.open,
         &mut visual.widgets.noninteractive,
     ] {
-        w.rounding = 6.0.into();
+        w.corner_radius = 6.0.into();
     }
     visual.widgets.inactive.weak_bg_fill = ELEVADO;
     visual.widgets.inactive.bg_fill = ELEVADO;
@@ -96,7 +96,7 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
     estilo.spacing.item_spacing = egui::vec2(8.0, 6.0);
     estilo.spacing.button_padding = egui::vec2(10.0, 5.0);
     estilo.spacing.slider_width = 90.0;
-    ctx.set_style(estilo);
+    ctx.set_global_style(estilo);
 }
 
 fn forte(tamanho: f32) -> FontId {
@@ -107,26 +107,27 @@ fn normal(tamanho: f32) -> FontId {
     FontId::proportional(tamanho)
 }
 
-pub fn desenhar(app: &mut App, ctx: &egui::Context) {
+pub fn desenhar(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = &ui.ctx().clone();
     video(app, ctx);
 
     // O menu fica sempre à vista fora do vídeo; sobre o vídeo, aparece com a
     // lista ou com os controles, e some junto com eles.
     let sem_nada_no_ar = app.tocando.is_none() && app.tocando_vod.is_none();
     if app.aba != Aba::Canais || app.lista_aberta || app.controles_visiveis() || sem_nada_no_ar {
-        menu_do_topo(app, ctx);
+        menu_do_topo(app, ui);
     }
     // A lista de canais é do "Ao vivo": no acervo ela só roubava espaço das capas.
     if app.lista_aberta && app.aba == Aba::Canais {
-        barra_lateral(app, ctx);
+        barra_lateral(app, ui);
     }
     if app.guia_aberto && app.aba == Aba::Canais {
-        guia(app, ctx);
+        guia(app, ui);
     }
     if app.aba == Aba::Canais {
-        palco(app, ctx);
+        palco(app, ui);
     } else {
-        acervo(app, ctx);
+        acervo(app, ui);
     }
     avisos(app, ctx);
     if app.ajuda_aberta {
@@ -158,7 +159,6 @@ enum Icone {
     Fontes,
     Ajuda,
     Estrela,
-    Cadeado,
     Preencher,
     Voltar,
     Fechar,
@@ -210,7 +210,7 @@ fn pintar_icone(pintor: &egui::Painter, icone: Icone, centro: Pos2, tamanho: f32
             }
         }
         Icone::Preencher => {
-            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.6), p(0.85, 0.6)), 2.0, traco);
+            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.6), p(0.85, 0.6)), 2.0, traco, egui::StrokeKind::Middle);
             pintor.line_segment([p(-0.45, 0.0), p(0.45, 0.0)], traco);
             pintor.add(egui::Shape::convex_polygon(vec![p(-0.55, 0.0), p(-0.3, -0.22), p(-0.3, 0.22)], cor, Stroke::NONE));
             pintor.add(egui::Shape::convex_polygon(vec![p(0.55, 0.0), p(0.3, -0.22), p(0.3, 0.22)], cor, Stroke::NONE));
@@ -222,7 +222,7 @@ fn pintar_icone(pintor: &egui::Painter, icone: Icone, centro: Pos2, tamanho: f32
             }
         }
         Icone::Guia => {
-            pintor.rect_stroke(Rect::from_min_max(p(-0.8, -0.65), p(0.8, 0.8)), 2.0, traco);
+            pintor.rect_stroke(Rect::from_min_max(p(-0.8, -0.65), p(0.8, 0.8)), 2.0, traco, egui::StrokeKind::Middle);
             pintor.line_segment([p(-0.8, -0.25), p(0.8, -0.25)], traco);
             pintor.line_segment([p(-0.4, -0.9), p(-0.4, -0.5)], traco);
             pintor.line_segment([p(0.4, -0.9), p(0.4, -0.5)], traco);
@@ -230,7 +230,7 @@ fn pintar_icone(pintor: &egui::Painter, icone: Icone, centro: Pos2, tamanho: f32
             pintor.circle_filled(p(0.1, 0.25), tamanho * 0.06, cor);
         }
         Icone::Filmes => {
-            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.65), p(0.85, 0.65)), 2.0, traco);
+            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.65), p(0.85, 0.65)), 2.0, traco, egui::StrokeKind::Middle);
             for x in [-0.55, 0.55] {
                 for y in [-0.35, 0.0, 0.35] {
                     pintor.circle_filled(p(x, y), tamanho * 0.05, cor);
@@ -238,7 +238,7 @@ fn pintar_icone(pintor: &egui::Painter, icone: Icone, centro: Pos2, tamanho: f32
             }
         }
         Icone::Series => {
-            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.55), p(0.85, 0.6)), 2.0, traco);
+            pintor.rect_stroke(Rect::from_min_max(p(-0.85, -0.55), p(0.85, 0.6)), 2.0, traco, egui::StrokeKind::Middle);
             pintor.line_segment([p(-0.3, 0.85), p(0.3, 0.85)], traco);
             pintor.add(egui::Shape::convex_polygon(vec![p(-0.2, -0.28), p(0.3, 0.02), p(-0.2, 0.32)], cor, Stroke::NONE));
         }
@@ -261,18 +261,6 @@ fn pintar_icone(pintor: &egui::Painter, icone: Icone, centro: Pos2, tamanho: f32
                 })
                 .collect();
             pintor.add(egui::Shape::closed_line(pontos, traco));
-        }
-        Icone::Cadeado => {
-            pintor.rect_filled(Rect::from_min_max(p(-0.65, -0.1), p(0.65, 0.85)), 2.0, cor);
-            pintor.add(egui::Shape::line(
-                (0..=12)
-                    .map(|i| {
-                        let a = std::f32::consts::PI + i as f32 * std::f32::consts::PI / 12.0;
-                        p(0.4 * a.cos(), -0.1 + 0.55 * a.sin())
-                    })
-                    .collect(),
-                traco,
-            ));
         }
         Icone::Voltar => {
             pintor.line_segment([p(0.4, -0.75), p(-0.35, 0.0)], traco);
@@ -333,10 +321,10 @@ fn pilula(ui: &mut egui::Ui, icone: Option<Icone>, texto: &str, ativa: bool) -> 
 }
 
 fn campo_de_busca(ui: &mut egui::Ui, texto: &mut String, dica: &str, id: &str) -> egui::Response {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(ELEVADO)
-        .rounding(7.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+        .corner_radius(7.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
@@ -349,7 +337,7 @@ fn campo_de_busca(ui: &mut egui::Ui, texto: &mut String, dica: &str, id: &str) -
                     egui::TextEdit::singleline(texto)
                         .id(egui::Id::new(id))
                         .hint_text(egui::RichText::new(dica).color(TERCIARIO))
-                        .frame(false)
+                        .frame(egui::Frame::NONE)
                         .desired_width(f32::INFINITY),
                 )
             })
@@ -378,7 +366,7 @@ fn campo_de_busca(ui: &mut egui::Ui, texto: &mut String, dica: &str, id: &str) -
 /// `desenhar` chama — o quadro fica embaixo, e a interface por cima.
 fn video(app: &mut App, ctx: &egui::Context) {
     let Some(mpv) = app.mpv.clone() else { return };
-    let rect = ctx.screen_rect();
+    let rect = ctx.content_rect();
     let pintor = ctx.layer_painter(egui::LayerId::background());
     pintor.rect_filled(rect, 0.0, Color32::BLACK);
     pintor.add(egui::PaintCallback {
@@ -463,7 +451,7 @@ fn aba_do_topo(ui: &mut egui::Ui, texto: &str, ativa: bool) -> egui::Response {
     let pintor = ui.painter();
     if ativa {
         pintor.rect_filled(rect, 18.0, Color32::from_white_alpha(20));
-        pintor.rect_stroke(rect, 18.0, Stroke::new(1.2, ACENTO.gamma_multiply(0.7)));
+        pintor.rect_stroke(rect, 18.0, Stroke::new(1.2, ACENTO.gamma_multiply(0.7)), egui::StrokeKind::Middle);
     } else if resposta.hovered() {
         pintor.rect_filled(rect, 18.0, Color32::from_white_alpha(12));
     }
@@ -473,12 +461,13 @@ fn aba_do_topo(ui: &mut egui::Ui, texto: &str, ativa: bool) -> egui::Response {
 }
 
 /// Marca, seções e relógio: o mesmo menu em todas as telas, como na TV Box.
-fn menu_do_topo(app: &mut App, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("menu-topo")
-        .exact_height(ALTURA_TOPO)
+fn menu_do_topo(app: &mut App, ui_pai: &mut egui::Ui) {
+    let ctx = &ui_pai.ctx().clone();
+    egui::Panel::top("menu-topo")
+        .exact_size(ALTURA_TOPO)
         .show_separator_line(false)
-        .frame(egui::Frame::none().fill(TOPO).inner_margin(egui::Margin::symmetric(18.0, 0.0)))
-        .show(ctx, |ui| {
+        .frame(egui::Frame::NONE.fill(TOPO).inner_margin(egui::Margin::symmetric(18, 0)))
+        .show(ui_pai, |ui| {
             ui.horizontal_centered(|ui| {
                 // Marca: monograma no acento e o nome.
                 let (marca, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
@@ -546,17 +535,18 @@ enum Item {
     Canal(usize),
 }
 
-fn barra_lateral(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::left("lateral")
-        .exact_width(LARGURA_LATERAL)
+fn barra_lateral(app: &mut App, ui_pai: &mut egui::Ui) {
+    let ctx = &ui_pai.ctx().clone();
+    egui::Panel::left("lateral")
+        .exact_size(LARGURA_LATERAL)
         .resizable(false)
         .frame(
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(LATERAL)
                 .stroke(Stroke::new(1.0, Color32::from_rgb(40, 40, 42)))
-                .inner_margin(egui::Margin { left: 10.0, right: 10.0, top: 12.0, bottom: 8.0 }),
+                .inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 8 }),
         )
-        .show(ctx, |ui| {
+        .show(ui_pai, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Canais").font(forte(20.0)).color(TEXTO));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -717,7 +707,7 @@ fn linha_do_canal(
         pintor.rect_filled(caixa, 10.0, Color32::from_white_alpha(10));
     }
     if focado {
-        pintor.rect_stroke(caixa, 10.0, Stroke::new(1.5, ACENTO));
+        pintor.rect_stroke(caixa, 10.0, Stroke::new(1.5, ACENTO), egui::StrokeKind::Middle);
     }
 
     // Número do canal, como no controle: é o que se digita para ir direto.
@@ -753,7 +743,7 @@ fn linha_do_canal(
     let cortar = |texto: &str, fonte: FontId| -> std::sync::Arc<egui::Galley> {
         let mut job = egui::text::LayoutJob::simple_singleline(texto.to_string(), fonte, TEXTO);
         job.wrap = egui::text::TextWrapping::truncate_at_width(largura_texto);
-        ui.fonts(|f| f.layout_job(job))
+        ui.painter().layout_job(job)
     };
     if let Some(programa) = no_ar {
         let titulo = cortar(nome, forte(14.0));
@@ -808,10 +798,10 @@ fn desenhar_estrela_cheia(pintor: &egui::Painter, centro: Pos2, tamanho: f32, co
 
 // MARK: - Palco
 
-fn palco(app: &mut App, ctx: &egui::Context) {
+fn palco(app: &mut App, ui_pai: &mut egui::Ui) {
     egui::CentralPanel::default()
-        .frame(egui::Frame::none())
-        .show(ctx, |ui| {
+        .frame(egui::Frame::NONE)
+        .show(ui_pai, |ui| {
             let area = ui.max_rect();
 
             // SAIMO_DEMO: só para conferir a tela sem o mpv (fora do Windows).
@@ -849,7 +839,7 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                 );
                 let mut job = egui::text::LayoutJob::simple(recado.to_string(), normal(13.0), SECUNDARIO, 560.0);
                 job.halign = egui::Align::Center;
-                let galeria = ui.fonts(|f| f.layout_job(job));
+                let galeria = ui.painter().layout_job(job);
                 ui.painter().galley(area.center() - egui::vec2(0.0, 18.0), galeria, SECUNDARIO);
 
                 let pasta = crate::pasta_do_programa();
@@ -861,7 +851,7 @@ fn palco(app: &mut App, ctx: &egui::Context) {
                 if !detalhe.is_empty() {
                     let mut job = egui::text::LayoutJob::simple(detalhe, normal(11.0), TERCIARIO, 560.0);
                     job.halign = egui::Align::Center;
-                    let galeria = ui.fonts(|f| f.layout_job(job));
+                    let galeria = ui.painter().layout_job(job);
                     ui.painter().galley(area.center() + egui::vec2(0.0, 46.0), galeria, TERCIARIO);
                 }
                 return;
@@ -902,12 +892,12 @@ fn palco(app: &mut App, ctx: &egui::Context) {
             let largura = (area.width() - 32.0).min(980.0);
             let esquerda = area.center().x - largura / 2.0;
             let barra = Rect::from_min_size(Pos2::new(esquerda, area.bottom() - 16.0 - 48.0), egui::vec2(largura, 48.0));
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(barra), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(barra), |ui| {
                 barra_de_controles(app, ui);
             });
             // A faixa tem altura variável (uma a três linhas): desenhada numa
             // camada própria, ancorada logo acima da barra.
-            let de_baixo = ui.ctx().screen_rect().bottom() - (barra.top() - 10.0);
+            let de_baixo = ui.ctx().content_rect().bottom() - (barra.top() - 10.0);
             egui::Area::new(egui::Id::new("faixa-no-ar"))
                 .fade_in(false)
                 .order(egui::Order::Middle)
@@ -929,13 +919,13 @@ fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
 
     if let Some(trecho) = app.pulo_na_tela() {
         let caixa = Rect::from_min_max(base - egui::vec2(230.0, 48.0), base);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(caixa), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(caixa), |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
                 let botao = egui::Button::new(
                     egui::RichText::new(format!("{} · Enter", trecho.tipo.rotulo())).font(forte(15.0)).color(Color32::BLACK),
                 )
                 .fill(Color32::WHITE)
-                .rounding(10.0)
+                .corner_radius(10.0)
                 .min_size(egui::vec2(0.0, 44.0));
                 if ui.add(botao).on_hover_text("Enter").clicked() {
                     app.pular_trecho();
@@ -948,8 +938,8 @@ fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
 
     let Some((seguinte, resta)) = app.proximo_na_tela() else { return };
     let caixa = Rect::from_min_max(base - egui::vec2(340.0, 112.0), base);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(caixa), |ui| {
-        egui::Frame::none().fill(VIDRO).rounding(14.0).inner_margin(egui::Margin::same(16.0)).show(ui, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(caixa), |ui| {
+        egui::Frame::NONE.fill(VIDRO).corner_radius(14.0).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
             ui.set_width(308.0);
             ui.label(egui::RichText::new(format!("Próximo episódio em {resta} s")).font(normal(12.5)).color(SECUNDARIO));
             ui.label(
@@ -961,11 +951,11 @@ fn pulos_na_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
             ui.horizontal(|ui| {
                 let assistir = egui::Button::new(egui::RichText::new("Assistir agora · Enter").font(forte(13.5)).color(Color32::BLACK))
                     .fill(Color32::WHITE)
-                    .rounding(8.0);
+                    .corner_radius(8.0);
                 if ui.add(assistir).clicked() {
                     app.tocar_proximo();
                 }
-                if ui.add(egui::Button::new(egui::RichText::new("Continuar vendo · Esc").font(normal(13.0))).rounding(8.0)).clicked() {
+                if ui.add(egui::Button::new(egui::RichText::new("Continuar vendo · Esc").font(normal(13.0))).corner_radius(8.0)).clicked() {
                     app.dispensar_proximo();
                 }
             });
@@ -986,7 +976,7 @@ fn estado_vazio(app: &mut App, ui: &mut egui::Ui, area: Rect) {
         SECUNDARIO,
     );
     let botoes = Rect::from_center_size(centro + egui::vec2(0.0, 66.0), egui::vec2(330.0, 30.0));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(botoes), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(botoes), |ui| {
         ui.horizontal_centered(|ui| {
             if botao_rotulo(ui, Icone::Lista, "Canais", "Mostrar a lista (L)").clicked() {
                 app.lista_aberta = true;
@@ -1020,7 +1010,7 @@ fn faixa_no_ar(app: &mut App, ui: &mut egui::Ui) {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 58.0), Sense::hover());
                 ui.painter().rect_filled(rect, 5.0, Color32::from_white_alpha(25));
                 if let Some(textura) = capa {
-                    egui::Image::new(&textura).fit_to_exact_size(rect.size()).rounding(5.0).paint_at(ui, rect);
+                    egui::Image::new(&textura).fit_to_exact_size(rect.size()).corner_radius(5.0).paint_at(ui, rect);
                 } else {
                     pintar_icone(ui.painter(), Icone::Filmes, rect.center(), 18.0, SECUNDARIO);
                 }
@@ -1089,12 +1079,12 @@ fn faixa_no_ar(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn vidro<R>(ui: &mut egui::Ui, conteudo: impl FnOnce(&mut egui::Ui) -> R) -> egui::Response {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(VIDRO)
-        .rounding(12.0)
+        .corner_radius(12.0)
         .stroke(Stroke::new(1.0, Color32::from_white_alpha(18)))
-        .shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 4.0), blur: 14.0, spread: 0.0, color: Color32::from_black_alpha(90) })
-        .inner_margin(egui::Margin::symmetric(16.0, 9.0))
+        .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(90) })
+        .inner_margin(egui::Margin::symmetric(16, 9))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), conteudo).inner
@@ -1106,12 +1096,12 @@ fn vidro<R>(ui: &mut egui::Ui, conteudo: impl FnOnce(&mut egui::Ui) -> R) -> egu
 /// fonte, avanço do filme, volume e o resto à direita.
 fn barra_de_controles(app: &mut App, ui: &mut egui::Ui) {
     let filme = app.tocando_vod.is_some();
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(VIDRO)
-        .rounding(26.0)
+        .corner_radius(26.0)
         .stroke(Stroke::new(1.0, Color32::from_white_alpha(18)))
-        .shadow(egui::epaint::Shadow { offset: egui::vec2(0.0, 4.0), blur: 16.0, spread: 0.0, color: Color32::from_black_alpha(110) })
-        .inner_margin(egui::Margin::symmetric(16.0, 6.0))
+        .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(110) })
+        .inner_margin(egui::Margin::symmetric(16, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -1204,11 +1194,11 @@ fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
             ui.set_min_width(190.0);
             ui.label(egui::RichText::new("Qualidade").font(forte(11.0)).color(SECUNDARIO));
             if ui.selectable_label(!videos.iter().any(|f| f.selecionada), "Automática").clicked() {
-                mpv.escolher_faixa("video", None); ui.close_menu();
+                mpv.escolher_faixa("video", None); ui.close();
             }
             for faixa in &videos {
                 if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
-                    mpv.escolher_faixa("video", Some(&faixa.id)); ui.close_menu();
+                    mpv.escolher_faixa("video", Some(&faixa.id)); ui.close();
                 }
             }
 
@@ -1217,7 +1207,7 @@ fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new("Idioma do áudio").font(forte(11.0)).color(SECUNDARIO));
                 for faixa in &audios {
                     if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
-                        mpv.escolher_faixa("audio", Some(&faixa.id)); ui.close_menu();
+                        mpv.escolher_faixa("audio", Some(&faixa.id)); ui.close();
                     }
                 }
             }
@@ -1227,11 +1217,11 @@ fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new("Legendas").font(forte(11.0)).color(SECUNDARIO));
                 let ligada = legendas.iter().any(|f| f.selecionada);
                 if ui.selectable_label(!ligada, "Desligadas").clicked() {
-                    mpv.escolher_faixa("sub", None); ui.close_menu();
+                    mpv.escolher_faixa("sub", None); ui.close();
                 }
                 for faixa in &legendas {
                     if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
-                        mpv.escolher_faixa("sub", Some(&faixa.id)); ui.close_menu();
+                        mpv.escolher_faixa("sub", Some(&faixa.id)); ui.close();
                     }
                 }
             }
@@ -1281,11 +1271,11 @@ fn menu_de_fontes(app: &mut App, ui: &mut egui::Ui) {
     }
     let atual = app.tocando.as_ref().map(|t| t.fonte).or_else(|| app.tocando_vod.as_ref().map(|f| f.fonte)).unwrap_or(0);
     let resposta = botao_icone(ui, Icone::Fontes, 15.0, "Escolher a fonte (seta direita passa para a próxima)");
-    let id = ui.make_persistent_id("menu-fontes");
-    if resposta.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(id));
-    }
-    egui::popup_above_or_below_widget(ui, id, &resposta, egui::AboveOrBelow::Above, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+    // Abre para cima: a barra de controles fica no pé da janela.
+    egui::Popup::from_toggle_button_response(&resposta)
+        .align(egui::RectAlign::TOP_START)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
         ui.set_min_width(160.0);
         ui.label(egui::RichText::new("Fontes").font(forte(11.0)).color(SECUNDARIO));
         for i in 0..total {
@@ -1307,11 +1297,11 @@ fn menu_de_velocidade(app: &mut App, ui: &mut egui::Ui) {
     let resposta = ui
         .add(egui::Button::new(egui::RichText::new(format!("{}×", app.velocidade)).font(forte(11.0))).frame(false))
         .on_hover_text("Velocidade");
-    let id = ui.make_persistent_id("menu-velocidade");
-    if resposta.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(id));
-    }
-    egui::popup_above_or_below_widget(ui, id, &resposta, egui::AboveOrBelow::Above, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+    // Abre para cima: a barra de controles fica no pé da janela.
+    egui::Popup::from_toggle_button_response(&resposta)
+        .align(egui::RectAlign::TOP_START)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
         ui.set_min_width(90.0);
         for v in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] {
             if ui.selectable_label(app.velocidade == v, format!("{v}×")).clicked() {
@@ -1344,17 +1334,17 @@ fn relogio(segundos: f64) -> String {
 
 // MARK: - Guia
 
-fn guia(app: &mut App, ctx: &egui::Context) {
+fn guia(app: &mut App, ui_pai: &mut egui::Ui) {
     let canal = app.tocando.as_ref().map(|t| t.canal).unwrap_or(app.foco);
     let Some(nome) = app.canais.get(canal).map(|c| c.nome.clone()) else { return };
     let programas = epg::grade(&nome);
     let instante = epg::agora();
 
-    egui::SidePanel::right("guia")
-        .exact_width(340.0)
+    egui::Panel::right("guia")
+        .exact_size(340.0)
         .resizable(false)
-        .frame(egui::Frame::none().fill(LATERAL).inner_margin(egui::Margin::symmetric(14.0, 12.0)))
-        .show(ctx, |ui| {
+        .frame(egui::Frame::NONE.fill(LATERAL).inner_margin(egui::Margin::symmetric(14, 12)))
+        .show(ui_pai, |ui| {
             ui.horizontal(|ui| {
                 pintar_icone(ui.painter(), Icone::Guia, ui.cursor().left_center() + egui::vec2(8.0, 0.0), 14.0, AZUL);
                 ui.add_space(20.0);
@@ -1386,7 +1376,7 @@ fn guia(app: &mut App, ctx: &egui::Context) {
                     let ao_vivo = programa.no_ar(instante);
                     let fundo = if ao_vivo { AZUL.gamma_multiply(0.22) } else { Color32::from_white_alpha(10) };
                     let borda = if ao_vivo { Stroke::new(1.0, AZUL.gamma_multiply(0.55)) } else { Stroke::NONE };
-                    egui::Frame::none().fill(fundo).stroke(borda).rounding(8.0).inner_margin(egui::Margin::symmetric(10.0, 7.0)).show(ui, |ui| {
+                    egui::Frame::NONE.fill(fundo).stroke(borda).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(epg::hora_local(programa.inicio)).font(FontId::monospace(11.5)).color(if ao_vivo { AZUL } else { SECUNDARIO }));
@@ -1413,17 +1403,17 @@ fn guia(app: &mut App, ctx: &egui::Context) {
 
 // MARK: - Acervo em grade
 
-fn acervo(app: &mut App, ctx: &egui::Context) {
+fn acervo(app: &mut App, ui_pai: &mut egui::Ui) {
     if app.ficha_aberta.is_some() {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(Color32::BLACK))
-            .show(ctx, |ui| ficha_tela(app, ui));
+            .frame(egui::Frame::NONE.fill(Color32::BLACK))
+            .show(ui_pai, |ui| ficha_tela(app, ui));
         return;
     }
     egui::CentralPanel::default()
-        .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(28.0, 18.0)))
-        .show(ctx, |ui| {
-            pintar_fundo(ui, ui.ctx().screen_rect());
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(28, 18)))
+        .show(ui_pai, |ui| {
+            pintar_fundo(ui, ui.ctx().content_rect());
             let titulo = match app.aba {
                 Aba::Inicio => "Início",
                 Aba::Filmes => "Filmes",
@@ -1614,27 +1604,6 @@ fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(12.0);
 }
 
-/// As seções que aparecem no alto do acervo e na lateral.
-///
-/// Extras só entra com o código digitado, e Favoritos só quando há algum: uma
-/// seção vazia é um beco.
-fn secoes_do_acervo(app: &App) -> Vec<(Aba, &'static str)> {
-    let mut out = vec![
-        (Aba::Inicio, "Início"),
-        (Aba::Filmes, "Filmes"),
-        (Aba::Series, "Séries"),
-        (Aba::Animes, "Animes"),
-        (Aba::Doramas, "Doramas"),
-    ];
-    if !app.favoritos_vod.is_empty() {
-        out.push((Aba::Favoritos, "Favoritos"));
-    }
-    if app.liberado {
-        out.push((Aba::Extras, "+18"));
-    }
-    out
-}
-
 /// A primeira tela do acervo: fileiras de capa que correm para o lado.
 ///
 /// Grade alfabética serve para achar o que já se sabe que existe; não serve
@@ -1642,8 +1611,8 @@ fn secoes_do_acervo(app: &App) -> Vec<(Aba, &'static str)> {
 /// assistido, o que foi marcado, o que está em alta — e a busca continua no
 /// mesmo lugar, filtrando dentro delas.
 ///
-/// As capas dos destaques já vêm anotadas quando a lista chega (ver
-/// `capas::anotar`), então desenhar esta tela não dispara busca nenhuma ao
+/// As capas dos destaques já vêm anotadas quando a lista chega (anotadas na
+/// chegada das fileiras), então desenhar esta tela não dispara busca nenhuma ao
 /// TMDB. Só "continuar assistindo" e favoritos procuram capa, e são poucos.
 fn fileiras(app: &mut App, ui: &mut egui::Ui) {
     let visiveis = filas_na_tela(app);
@@ -1977,18 +1946,18 @@ fn cartao(
     pintor.rect_filled(quadro, 9.0, ELEVADO);
     match capa {
         Some(textura) => {
-            egui::Image::new(&textura).fit_to_exact_size(quadro.size()).rounding(9.0).paint_at(ui, quadro);
+            egui::Image::new(&textura).fit_to_exact_size(quadro.size()).corner_radius(9.0).paint_at(ui, quadro);
         }
         None => {
             pintar_icone(&pintor, Icone::Filmes, quadro.center() - egui::vec2(0.0, 12.0), 30.0, TERCIARIO);
             let mut job = egui::text::LayoutJob::simple(titulo.to_string(), normal(12.0), SECUNDARIO, quadro.width() - 20.0);
             job.halign = egui::Align::Center;
-            let galeria = ui.fonts(|f| f.layout_job(job));
+            let galeria = ui.painter().layout_job(job);
             pintor.galley(Pos2::new(quadro.center().x, quadro.center().y + 14.0), galeria, SECUNDARIO);
         }
     }
     if focado {
-        pintor.rect_stroke(quadro.expand(3.0), 11.0, Stroke::new(2.5, AZUL));
+        pintor.rect_stroke(quadro.expand(3.0), 11.0, Stroke::new(2.5, AZUL), egui::StrokeKind::Middle);
     }
     if favorito {
         let centro = quadro.right_top() + egui::vec2(-16.0, 16.0);
@@ -2006,7 +1975,7 @@ fn cartao(
     job.wrap.max_rows = 2;
     job.wrap.break_anywhere = false;
     job.wrap.overflow_character = Some('…');
-    let galeria = ui.fonts(|f| f.layout_job(job));
+    let galeria = ui.painter().layout_job(job);
     let y = rect.top() + largura * 1.5 + 7.0;
     pintor.galley(Pos2::new(rect.left(), y), galeria.clone(), TEXTO);
     pintor.text(
@@ -2030,7 +1999,7 @@ fn episodios(app: &mut App, ui: &mut egui::Ui, serie: &vod::Serie) {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 135.0), Sense::hover());
         ui.painter().rect_filled(rect, 8.0, ELEVADO);
         if let Some(textura) = capa {
-            egui::Image::new(&textura).fit_to_exact_size(rect.size()).rounding(8.0).paint_at(ui, rect);
+            egui::Image::new(&textura).fit_to_exact_size(rect.size()).corner_radius(8.0).paint_at(ui, rect);
         }
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(&serie.titulo).font(forte(20.0)));
@@ -2115,7 +2084,7 @@ fn avisos(app: &mut App, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .anchor(Align2::CENTER_TOP, egui::vec2(0.0, 24.0))
         .show(ctx, |ui| {
-            egui::Frame::none().fill(VIDRO).rounding(20.0).inner_margin(egui::Margin::symmetric(18.0, 9.0)).show(ui, |ui| {
+            egui::Frame::NONE.fill(VIDRO).corner_radius(20.0).inner_margin(egui::Margin::symmetric(18, 9)).show(ui, |ui| {
                 ui.label(egui::RichText::new(texto).font(forte(13.0)));
             });
         });
@@ -2151,11 +2120,11 @@ fn atalhos(app: &mut App, ctx: &egui::Context) {
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .open(&mut aberta)
-        .frame(egui::Frame::window(&ctx.style()).fill(PAINEL).inner_margin(egui::Margin::same(18.0)))
+        .frame(egui::Frame::window(&ctx.global_style()).fill(PAINEL).inner_margin(egui::Margin::same(18)))
         .show(ctx, |ui| {
             egui::Grid::new("atalhos").num_columns(2).spacing([28.0, 8.0]).show(ui, |ui| {
                 for (tecla, acao) in linhas {
-                    egui::Frame::none().fill(ELEVADO).rounding(5.0).inner_margin(egui::Margin::symmetric(8.0, 3.0)).show(ui, |ui| {
+                    egui::Frame::NONE.fill(ELEVADO).corner_radius(5.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
                         ui.label(egui::RichText::new(tecla).font(forte(12.0)));
                     });
                     ui.label(egui::RichText::new(acao).color(SECUNDARIO));
@@ -2200,7 +2169,7 @@ fn ficha_tela(app: &mut App, ui: &mut egui::Ui) {
 
     let mut acao: Option<AcaoDaFicha> = None;
     let conteudo = area.shrink2(egui::vec2(40.0, 22.0));
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(conteudo), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(conteudo), |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if botao_rotulo(ui, Icone::Voltar, "Voltar", "Voltar à grade (Esc)").clicked() {
                 acao = Some(AcaoDaFicha::Fechar);
@@ -2349,7 +2318,7 @@ fn ator_tela(app: &mut App, ui: &mut egui::Ui, area: Rect) {
     let trabalhos = app.filmografia.clone();
     let mut acao: Option<AcaoDaFicha> = None;
 
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(area.shrink2(egui::vec2(40.0, 22.0))), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(egui::vec2(40.0, 22.0))), |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if botao_rotulo(ui, Icone::Voltar, "Voltar à ficha", "Voltar (Esc)").clicked() {
                 acao = Some(AcaoDaFicha::Fechar);
@@ -2450,7 +2419,7 @@ fn pintar_cobrindo(ui: &egui::Ui, textura: &egui::TextureHandle, alvo: Rect, can
         let y0 = (1.0 - altura) * foco_y;
         Rect::from_min_max(Pos2::new(0.0, y0), Pos2::new(1.0, y0 + altura))
     };
-    egui::Image::new(textura).uv(uv).fit_to_exact_size(alvo.size()).rounding(cantos).paint_at(ui, alvo);
+    egui::Image::new(textura).uv(uv).fit_to_exact_size(alvo.size()).corner_radius(cantos).paint_at(ui, alvo);
 }
 
 /// Um degradê de duas cores, na horizontal ou na vertical.
@@ -2471,11 +2440,11 @@ fn degrade(ui: &egui::Ui, alvo: Rect, inicio: Color32, fim: Color32, horizontal:
 }
 
 fn selo_da_ficha(ui: &mut egui::Ui, texto: &str, cor: Color32) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(Color32::from_white_alpha(18))
         .stroke(Stroke::new(1.0, Color32::from_white_alpha(60)))
-        .rounding(6.0)
-        .inner_margin(egui::Margin::symmetric(10.0, 4.0))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 4))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(texto).font(forte(13.0)).color(cor));
         });
@@ -2495,7 +2464,7 @@ fn cor_da_classificacao(nota: &str) -> Color32 {
 
 /// Botão da ficha: o principal é branco com texto escuro, como nas TVs.
 fn botao_ficha(ui: &mut egui::Ui, texto: &str, principal: bool) -> egui::Response {
-    let galeria = ui.fonts(|f| f.layout_no_wrap(texto.to_string(), forte(15.0), TEXTO));
+    let galeria = ui.painter().layout_no_wrap(texto.to_string(), forte(15.0), TEXTO);
     let tamanho = egui::vec2(galeria.size().x + 48.0, 44.0);
     let (rect, resposta) = ui.allocate_exact_size(tamanho, Sense::click());
     let sobre = resposta.hovered();
@@ -2536,7 +2505,7 @@ fn cartao_de_pessoa(ui: &mut egui::Ui, nome: &str, papel: &str, foto: Option<egu
         job.wrap.max_rows = 1;
         job.wrap.overflow_character = Some('…');
         job.halign = egui::Align::Center;
-        let galeria = ui.fonts(|f| f.layout_job(job));
+        let galeria = ui.painter().layout_job(job);
         ui.painter().galley(Pos2::new(rect.center().x, rect.top() + y), galeria, cor);
     };
     texto(nome, forte(12.5), TEXTO, 106.0);
@@ -2560,13 +2529,13 @@ fn cartao_de_trabalho(ui: &mut egui::Ui, nome: &str, papel: &str,
         }
     }
     if sobre {
-        ui.painter().rect_stroke(quadro.expand(2.0), 10.0, Stroke::new(2.5, AZUL));
+        ui.painter().rect_stroke(quadro.expand(2.0), 10.0, Stroke::new(2.5, AZUL), egui::StrokeKind::Middle);
     }
     let texto = |t: &str, fonte: FontId, cor: Color32, y: f32| {
         let mut job = egui::text::LayoutJob::simple(t.to_string(), fonte, cor, largura);
         job.wrap.max_rows = 1;
         job.wrap.overflow_character = Some('…');
-        let galeria = ui.fonts(|f| f.layout_job(job));
+        let galeria = ui.painter().layout_job(job);
         ui.painter().galley(Pos2::new(rect.left(), rect.top() + altura_capa + y), galeria, cor);
     };
     texto(nome, forte(12.5), TEXTO, 7.0);
@@ -2583,7 +2552,7 @@ fn atualizacao_na_tela(app: &mut App, ctx: &egui::Context) {
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .open(&mut aberta)
-        .frame(egui::Frame::window(&ctx.style()).fill(PAINEL).inner_margin(egui::Margin::same(18.0)))
+        .frame(egui::Frame::window(&ctx.global_style()).fill(PAINEL).inner_margin(egui::Margin::same(18)))
         .show(ctx, |ui| {
             ui.set_max_width(460.0);
             ui.label(egui::RichText::new(format!("Você está na {}", crate::VERSAO)).color(SECUNDARIO));

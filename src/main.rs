@@ -11,7 +11,6 @@
 
 mod atualizacao;
 mod fontes_desativadas;
-mod capas;
 mod destaques;
 mod generos;
 mod ficha;
@@ -49,7 +48,6 @@ fn main() -> eframe::Result<()> {
     }
     let opcoes = eframe::NativeOptions {
         viewport: janela,
-        vsync: true,
         ..Default::default()
     };
     eframe::run_native("Saimo TV", opcoes, Box::new(|cc| Ok(Box::new(App::novo(cc)))))
@@ -72,8 +70,6 @@ enum Recado {
     Acervo(Vec<vod::Achado>),
     /// A lista de servidores desligados mudou: a lista de canais muda junto.
     FontesDesativadas,
-    /// Uma capa achada no TMDB: só serve para redesenhar a lista.
-    Capa,
     /// A ficha de um título chegou: sinopse, duração, gêneros e elenco.
     Ficha(String, bool, Option<ficha::Ficha>),
     /// Os trabalhos de um ator, como o TMDB os devolve. O cruzamento com o
@@ -830,7 +826,18 @@ impl App {
     /// igual. Quem não tem ficha fica sem capa, e a tela põe uma marca no
     /// lugar.
     fn capa(&mut self, titulo: &str, serie: bool) -> Option<egui::TextureHandle> {
-        let endereco = self.generos.capa(titulo, serie)?.to_string();
+        // A ficha publicada primeiro; sem ela, a capa que veio com a fileira
+        // de destaque (animes e doramas quase nunca têm ficha).
+        let endereco = match self.generos.capa(titulo, serie) {
+            Some(url) => url.to_string(),
+            None => self
+                .filas
+                .iter()
+                .flat_map(|f| &f.itens)
+                .find(|i| i.titulo == titulo && i.serie() == serie && !i.capa.is_empty())?
+                .capa
+                .clone(),
+        };
         // 342 pixels, o tamanho que o arquivo de fichas publica: a capa era
         // reduzida a 96, o tamanho das logos de canal, e ficava borrada num
         // cartão de 150x225 — pior ainda em tela com escala de 150%.
@@ -1056,7 +1063,6 @@ impl App {
                     self.reordenar();
                     self.pedir_guia();
                 }
-                Recado::Capa => {}
                 Recado::Ficha(titulo, serie, achada) => {
                     // A janela pode ter sido fechada, ou trocada de título,
                     // enquanto o pedido corria: só vale a resposta do aberto.
@@ -1099,11 +1105,6 @@ impl App {
                     self.generos = lidos;
                 }
                 Recado::Destaques(lista) => {
-                    for fila in &lista {
-                        for item in &fila.itens {
-                            capas::anotar(&item.titulo, item.serie(), &item.capa);
-                        }
-                    }
                     self.filas = lista;
                     self.carregando_filas = false;
                     if self.aba == Aba::Inicio {
@@ -1844,7 +1845,7 @@ fn foto_de_teste(app: &mut App, ctx: &egui::Context) {
     if inicio.elapsed() > Duration::from_secs(espera) {
         app.mostrar_controles();
         if !PEDIDA.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
     }
     let imagem = ctx.input(|i| {
@@ -1886,14 +1887,15 @@ impl eframe::App for App {
         [0.0, 0.0, 0.0, 1.0]
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         self.cuidar_dos_recados(ctx);
         self.cuidar_do_mpv(ctx);
         self.teclado(ctx);
         self.baixar_logos_pendentes();
 
         foto_de_teste(self, ctx);
-        tela::desenhar(self, ctx);
+        tela::desenhar(self, ui);
 
         // Capa e logo pedidos durante o desenho só chegam no quadro seguinte:
         // sem este pedido de redesenho, a lista ficaria parada até alguém mexer.

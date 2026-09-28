@@ -56,6 +56,12 @@ Para ver as telas no Mac sem o mpv: `SAIMO_DEMO=1 SAIMO_ABA=filmes cargo run`.
 | `src/pulos.rs` | TheIntroDB: abertura, recapitulação e créditos |
 | `src/vod.rs`, `src/progresso.rs` | acervo e onde cada título parou |
 
+## Versões
+
+egui/eframe 0.36 (os painéis agora são desenhados dentro do `Ui` que o
+`eframe::App::ui` recebe), ureq 3 para a rede e libloading 0.9 para carregar a
+libmpv. Compila sem nenhum aviso.
+
 ## Montar o pacote
 
 Do próprio Mac, com o mingw-w64 (`brew install mingw-w64`):

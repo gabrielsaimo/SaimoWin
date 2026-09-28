@@ -23,22 +23,24 @@ enum Resposta {
 }
 
 fn sondar(url: &str, referer: Option<&str>, agente: Option<&str>) -> Resposta {
-    let cliente = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(10))
+    let cliente: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .timeout_recv_response(Some(Duration::from_secs(10)))
+        .timeout_recv_body(Some(Duration::from_secs(10)))
         .user_agent(agente.unwrap_or(crate::AGENTE))
-        .build();
-    let mut pedido = cliente.get(url).set("Accept", "*/*").set("Range", "bytes=0-4095");
+        .build()
+        .into();
+    let mut pedido = cliente.get(url).header("Accept", "*/*").header("Range", "bytes=0-4095");
     if let Some(r) = referer {
-        pedido = pedido.set("Referer", r);
+        pedido = pedido.header("Referer", r);
     }
     let resposta = match pedido.call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(codigo, _)) => return Resposta::Morta(format!("HTTP {codigo}")),
-        Err(e) => return Resposta::Morta(e.kind().to_string()),
+        Err(ureq::Error::StatusCode(codigo)) => return Resposta::Morta(format!("HTTP {codigo}")),
+        Err(e) => return Resposta::Morta(e.to_string()),
     };
     let mut inicio = Vec::new();
-    let _ = resposta.into_reader().take(4096).read_to_end(&mut inicio);
+    let _ = resposta.into_body().into_reader().take(4096).read_to_end(&mut inicio);
     let texto = String::from_utf8_lossy(&inicio);
     if texto.contains("#EXTM3U") {
         Resposta::Viva("hls")
