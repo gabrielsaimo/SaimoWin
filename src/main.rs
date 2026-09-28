@@ -1621,7 +1621,8 @@ impl App {
     }
 
     pub fn alternar_pausa(&mut self) {
-        self.pausado = !self.pausado;
+        // Ao vivo não pausa: só filme e série param.
+        self.pausado = self.tocando_vod.is_some() && !self.pausado;
         if let Some(mpv) = self.mpv.as_ref() {
             mpv.pausa(self.pausado);
         }

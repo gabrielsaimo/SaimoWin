@@ -1106,9 +1106,12 @@ fn barra_de_controles(app: &mut App, ui: &mut egui::Ui) {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let (icone, dica) = if app.pausado { (Icone::Tocar, "Tocar (Espaço)") } else { (Icone::Pausar, "Pausar (Espaço)") };
-                if botao_icone(ui, icone, 17.0, dica).clicked() {
-                    app.alternar_pausa();
+                // Ao vivo não tem pausa.
+                if filme {
+                    let (icone, dica) = if app.pausado { (Icone::Tocar, "Tocar (Espaço)") } else { (Icone::Pausar, "Pausar (Espaço)") };
+                    if botao_icone(ui, icone, 17.0, dica).clicked() {
+                        app.alternar_pausa();
+                    }
                 }
                 if !filme {
                     if botao_icone(ui, Icone::Anterior, 14.0, "Canal anterior (Page Up)").clicked() {

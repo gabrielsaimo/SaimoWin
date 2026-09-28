@@ -26,6 +26,7 @@ abrem com a fileira "Em alta" e a grade vem dos lançamentos para trás.
 - Fonte que "termina" nos primeiros 30 s é tratada como quebrada: vai para a
   próxima em vez de fechar.
 - Abre no último canal assistido.
+- Ao vivo não pausa: o botão de pausa e o Espaço só valem para filme e série.
 - Trocar de canal não derruba mais a fonte nova: o fim do arquivo anterior
   (motivo STOP do mpv) era lido como queda, e o canal passava por todas as
   fontes em um segundo até dizer que estava fora do ar. `mpv::Vigia` só conta
