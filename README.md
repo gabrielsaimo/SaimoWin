@@ -7,6 +7,14 @@ Versão atual: **2.0.0**. O instalador sai no release único de
 [SaimoPlayer](https://github.com/gabrielsaimo/SaimoPlayer/releases/latest), e o
 programa avisa quando há versão nova.
 
+## Visual
+
+Mesma identidade da TV Box: azul-marinho com acento ciano, menu do topo com
+todas as seções (Início, Ao vivo, Filmes, Séries, Animes, Doramas, Favoritos)
+em todas as telas, lista de canais com seções em chips e número do canal, e o
+acervo sobre a imagem de fundo do app (`assets/fundo.jpg`). Filmes e Séries
+abrem com a fileira "Em alta" e a grade vem dos lançamentos para trás.
+
 ## Novidades da 2.0
 
 - **Pular abertura e recapitulação** com os tempos do
@@ -18,6 +26,24 @@ programa avisa quando há versão nova.
 - Fonte que "termina" nos primeiros 30 s é tratada como quebrada: vai para a
   próxima em vez de fechar.
 - Abre no último canal assistido.
+- Trocar de canal não derruba mais a fonte nova: o fim do arquivo anterior
+  (motivo STOP do mpv) era lido como queda, e o canal passava por todas as
+  fontes em um segundo até dizer que estava fora do ar. `mpv::Vigia` só conta
+  o fim do arquivo que está no ar, e por erro ou fim de verdade.
+- Guia sem "No Data" no lugar do programa.
+
+## Testes
+
+```bash
+cargo test                                      # lógica, sem rede
+cargo test bateria -- --ignored --nocapture     # contra a rede de verdade
+```
+
+A bateria sonda a lista publicada (até três fontes por canal), uma amostra do
+acervo e o TheIntroDB, e lista o que está fora e por quê. Serve para separar
+"o app está quebrado" de "a fonte caiu".
+
+Para ver as telas no Mac sem o mpv: `SAIMO_DEMO=1 SAIMO_ABA=filmes cargo run`.
 
 | Peça | O que faz |
 |---|---|
