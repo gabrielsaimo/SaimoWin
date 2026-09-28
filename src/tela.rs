@@ -452,7 +452,7 @@ fn abas_do_topo(app: &App) -> Vec<(Aba, &'static str)> {
         abas.push((Aba::Favoritos, "Favoritos"));
     }
     if app.liberado {
-        abas.push((Aba::Extras, "Extras"));
+        abas.push((Aba::Extras, "+18"));
     }
     abas
 }
@@ -1431,7 +1431,7 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 Aba::Animes => "Animes",
                 Aba::Doramas => "Doramas",
                 Aba::Favoritos => "Favoritos",
-                Aba::Extras => "Extras",
+                Aba::Extras => "+18",
                 Aba::Canais => "",
             };
             // As seções moram no menu do topo; aqui ficam o nome e a busca.
@@ -1630,7 +1630,7 @@ fn secoes_do_acervo(app: &App) -> Vec<(Aba, &'static str)> {
         out.push((Aba::Favoritos, "Favoritos"));
     }
     if app.liberado {
-        out.push((Aba::Extras, "Extras"));
+        out.push((Aba::Extras, "+18"));
     }
     out
 }
