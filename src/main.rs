@@ -258,6 +258,8 @@ struct App {
     /// Já voltou ao último canal nesta abertura: a lista recarrega e não pode
     /// arrancar a pessoa do que ela escolheu depois.
     retomou_canal: bool,
+    /// As fileiras já foram pedidas: Filmes e Séries também as usam.
+    carregando_filas: bool,
     /// O título cuja ficha está aberta: nome, se é série e o detalhe do cartão.
     pub ficha_aberta: Option<(String, bool)>,
     /// Para onde o "Assistir" da ficha aberta leva.
@@ -402,6 +404,7 @@ impl App {
             preencher: false,
             ultimo_mouse: None,
             retomou_canal: false,
+            carregando_filas: false,
             ficha_aberta: None,
             ficha_destino: None,
             ficha: None,
@@ -413,6 +416,15 @@ impl App {
             filmografia_carregando: false,
         };
         app.reordenar();
+        // Só para conferir telas fora do Windows: SAIMO_ABA=inicio|filmes|series.
+        if let Ok(aba) = std::env::var("SAIMO_ABA") {
+            match aba.as_str() {
+                "inicio" => app.abrir_secao(Aba::Inicio),
+                "filmes" => app.abrir_secao(Aba::Filmes),
+                "series" => app.abrir_secao(Aba::Series),
+                _ => {}
+            }
+        }
         app
     }
 
@@ -1093,7 +1105,10 @@ impl App {
                         }
                     }
                     self.filas = lista;
-                    self.carregando_vod = false;
+                    self.carregando_filas = false;
+                    if self.aba == Aba::Inicio {
+                        self.carregando_vod = false;
+                    }
                 }
                 Recado::Colecao(aba, lista) => {
                     if self.aba == aba {
@@ -1456,9 +1471,12 @@ impl App {
                 .collect();
         }
 
-        self.acervo
+        let mut itens: Vec<ItemNaTela> = self.acervo
             .iter()
             .filter(|a| a.serie == serie || self.aba == Aba::Favoritos)
+            // Nome sem nenhuma letra nem número ("(2024)") é lixo da lista de
+            // origem: abria a grade como primeiro cartão, sem capa.
+            .filter(|a| tem_nome(&a.titulo))
             .filter(|a| self.aba != Aba::Favoritos || self.favoritos_vod.iter().any(|t| *t == a.titulo))
             .filter(|a| busca.is_empty() || catalogo::chave_de_ordem(&a.titulo).contains(&busca))
             .filter(|a| self.generos.tem(&a.titulo, a.serie, &self.genero))
@@ -1468,7 +1486,27 @@ impl App {
                 serie: a.serie,
                 letra: a.letra.clone(),
             })
-            .collect()
+            .collect();
+        // Sem busca, o mais novo primeiro: é o que a pessoa procura ao abrir
+        // Filmes, e não "#Alive" só porque "#" vem antes de "A".
+        if busca.is_empty() {
+            let ano = |i: &ItemNaTela| {
+                i.detalhe.get(..4).and_then(|a| a.parse::<u32>().ok()).or_else(|| {
+                    let t = i.titulo.trim_end();
+                    t.ends_with(')').then(|| t.len()).filter(|n| *n >= 6).and_then(|n| t.get(n - 5..n - 1)?.parse().ok())
+                })
+                // "Blade Runner 2049" não é de 2049.
+                .filter(|a| (1900..=2027).contains(a))
+                .unwrap_or(0)
+            };
+            let simbolo = |i: &ItemNaTela| !i.titulo.chars().next().is_some_and(|c| c.is_alphanumeric());
+            itens.sort_by(|a, b| {
+                simbolo(a).cmp(&simbolo(b))
+                    .then_with(|| ano(b).cmp(&ano(a)))
+                    .then_with(|| catalogo::chave_de_ordem(&a.titulo).cmp(&catalogo::chave_de_ordem(&b.titulo)))
+            });
+        }
+        itens
     }
 
     /// Abre um título da grade: a letra dele pode ainda não ter chegado, e aí
@@ -1675,13 +1713,17 @@ impl App {
         self.foco_vod = 0;
         self.serie_aberta = None;
         self.foco_fila = 0;
+        // As fileiras de destaque abrem Início, Filmes e Séries.
+        if matches!(aba, Aba::Inicio | Aba::Filmes | Aba::Series) && self.filas.is_empty() && !self.carregando_filas {
+            self.carregando_filas = true;
+            let emissor = self.emissor.clone();
+            std::thread::spawn(move || {
+                let _ = emissor.send(Recado::Destaques(destaques::filas()));
+            });
+        }
         if aba == Aba::Inicio {
             if self.filas.is_empty() {
                 self.carregando_vod = true;
-                let emissor = self.emissor.clone();
-                std::thread::spawn(move || {
-                    let _ = emissor.send(Recado::Destaques(destaques::filas()));
-                });
             }
             return;
         }
@@ -1869,3 +1911,23 @@ impl eframe::App for App {
 mod epg;
 mod vod;
 mod tela;
+
+/// Um nome de título de verdade tem algo além do ano entre parênteses.
+fn tem_nome(titulo: &str) -> bool {
+    let sem_ano = match titulo.rfind(" (") {
+        Some(i) if titulo.ends_with(')') => &titulo[..i],
+        _ if titulo.starts_with('(') && titulo.ends_with(')') => "",
+        _ => titulo,
+    };
+    sem_ano.chars().any(|c| c.is_alphanumeric())
+}
+
+#[cfg(test)]
+mod testes_nome {
+    #[test]
+    fn so_ano_nao_e_nome() {
+        assert!(!super::tem_nome("(2024)"));
+        assert!(super::tem_nome("#Alive (2020)"));
+        assert!(super::tem_nome("1917"));
+    }
+}

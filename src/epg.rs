@@ -151,7 +151,16 @@ pub fn agora() -> i64 {
 
 /// Programação do canal, já ordenada.
 pub fn grade(canal: &str) -> Vec<Programa> {
-    GRADE.lock().unwrap().as_ref().and_then(|g| g.get(canal).cloned()).unwrap_or_default()
+    let mut lista = GRADE.lock().unwrap().as_ref().and_then(|g| g.get(canal).cloned()).unwrap_or_default();
+    lista.retain(|p| !sem_informacao(&p.titulo));
+    lista
+}
+
+/// "No Data" é o que alguns feeds põem nas horas sem grade: não é programa, e
+/// mostrá-lo como se fosse ("No Data · faltam 22 min") só confunde.
+pub fn sem_informacao(titulo: &str) -> bool {
+    let t = titulo.trim();
+    t.is_empty() || t.eq_ignore_ascii_case("no data") || t.eq_ignore_ascii_case("sem informação")
 }
 
 /// O que está no ar e o que vem depois.
@@ -160,7 +169,11 @@ pub fn agora_e_depois(canal: &str) -> Option<(Programa, Option<Programa>)> {
     let lista = guia.as_ref()?.get(canal)?;
     let instante = agora();
     let posicao = lista.iter().position(|p| p.no_ar(instante))?;
-    Some((lista[posicao].clone(), lista.get(posicao + 1).cloned()))
+    if sem_informacao(&lista[posicao].titulo) {
+        return None;
+    }
+    let depois = lista[posicao + 1..].iter().find(|p| !sem_informacao(&p.titulo)).cloned();
+    Some((lista[posicao].clone(), depois))
 }
 
 pub fn canais_com_guia() -> usize {
@@ -737,5 +750,15 @@ mod testes {
             println!("{nome}: {}", atual.unwrap_or_else(|| "sem guia".into()));
         }
         assert!(grade.len() > 100, "guia pequeno demais: {}", grade.len());
+    }
+}
+
+#[cfg(test)]
+mod testes_sem_informacao {
+    #[test]
+    fn no_data_nao_e_programa() {
+        assert!(super::sem_informacao("No Data"));
+        assert!(super::sem_informacao("  no data "));
+        assert!(!super::sem_informacao("Jornal Nacional"));
     }
 }

@@ -1,10 +1,9 @@
-//! O desenho, no molde do app do Mac.
+//! O desenho, com a cara do Saimo TV 2.0 (a mesma da TV Box).
 //!
-//! Mesma organização: barra lateral com a busca, o acervo em pílulas e os
-//! canais por seção; o vídeo ocupando o resto, com a faixa do que está no ar e
-//! a barra de controles em cápsula, que somem sozinhas; e o acervo abrindo em
-//! grade de capas por cima do vídeo. As cores são as do modo escuro do macOS,
-//! com o azul do sistema como destaque.
+//! Menu do topo com todas as seções, igual em todas as telas; lista de canais
+//! com as seções em chips; o vídeo ocupando o resto, com a faixa do que está
+//! no ar e a barra de controles, que somem sozinhas; e o acervo sobre a imagem
+//! de fundo do app. Azul-marinho profundo com um único acento ciano.
 //!
 //! Todo comando da barra tem o atalho na dica, e o painel de atalhos (H ou
 //! F1) lista todos: nada depende de alguém adivinhar tecla.
@@ -15,22 +14,26 @@ use eframe::glow::HasContext;
 use std::sync::Arc;
 use std::time::Duration;
 
-// Cores do modo escuro do macOS.
-const LATERAL: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 250);
-const PAINEL: Color32 = Color32::from_rgb(28, 28, 30);
-const ELEVADO: Color32 = Color32::from_rgb(44, 44, 46);
-const LINHA: Color32 = Color32::from_rgb(58, 58, 60);
-const TEXTO: Color32 = Color32::from_rgb(242, 242, 247);
-const SECUNDARIO: Color32 = Color32::from_rgb(152, 152, 157);
-const TERCIARIO: Color32 = Color32::from_rgb(99, 99, 102);
-const AZUL: Color32 = Color32::from_rgb(10, 132, 255);
+// Saimo 2.0: azul-marinho com acento ciano, como a TV Box.
+const LATERAL: Color32 = Color32::from_rgba_premultiplied(10, 15, 29, 238);
+const TOPO: Color32 = Color32::from_rgba_premultiplied(7, 11, 22, 232);
+const PAINEL: Color32 = Color32::from_rgb(11, 16, 30);
+const ELEVADO: Color32 = Color32::from_rgb(26, 35, 58);
+const LINHA: Color32 = Color32::from_rgb(38, 50, 78);
+const TEXTO: Color32 = Color32::from_rgb(240, 244, 250);
+const SECUNDARIO: Color32 = Color32::from_rgb(150, 160, 182);
+const TERCIARIO: Color32 = Color32::from_rgb(98, 108, 132);
+/// O acento de tudo: foco, andamento, aba escolhida.
+const ACENTO: Color32 = Color32::from_rgb(72, 214, 196);
+const AZUL: Color32 = ACENTO;
 const AMARELO: Color32 = Color32::from_rgb(255, 214, 10);
 const VERMELHO: Color32 = Color32::from_rgb(255, 69, 58);
 const VERDE: Color32 = Color32::from_rgb(48, 209, 88);
 const VIDRO: Color32 = Color32::from_rgba_premultiplied(24, 24, 28, 225);
 
-const LARGURA_LATERAL: f32 = 272.0;
-const ALTURA_LINHA: f32 = 46.0;
+const LARGURA_LATERAL: f32 = 320.0;
+const ALTURA_LINHA: f32 = 56.0;
+const ALTURA_TOPO: f32 = 56.0;
 
 /// Visual base e, no Windows, a fonte do sistema (Segoe UI) no lugar da
 /// padrão do egui — é o que mais aproxima a cara de um app nativo.
@@ -70,8 +73,8 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
     visual.window_rounding = 12.0.into();
     visual.extreme_bg_color = ELEVADO;
     visual.faint_bg_color = ELEVADO;
-    visual.selection.bg_fill = AZUL;
-    visual.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    visual.selection.bg_fill = ACENTO.gamma_multiply(0.45);
+    visual.selection.stroke = Stroke::new(1.0, TEXTO);
     visual.hyperlink_color = AZUL;
     visual.override_text_color = Some(TEXTO);
     for w in [
@@ -86,7 +89,8 @@ pub fn aplicar_estilo(ctx: &egui::Context) {
     visual.widgets.inactive.weak_bg_fill = ELEVADO;
     visual.widgets.inactive.bg_fill = ELEVADO;
     visual.widgets.hovered.weak_bg_fill = Color32::from_rgb(58, 58, 62);
-    visual.widgets.active.weak_bg_fill = AZUL;
+    visual.widgets.active.weak_bg_fill = ACENTO.gamma_multiply(0.5);
+    visual.widgets.hovered.bg_stroke = Stroke::new(1.0, ACENTO.gamma_multiply(0.6));
     visual.slider_trailing_fill = true;
     estilo.visuals = visual;
     estilo.spacing.item_spacing = egui::vec2(8.0, 6.0);
@@ -106,7 +110,14 @@ fn normal(tamanho: f32) -> FontId {
 pub fn desenhar(app: &mut App, ctx: &egui::Context) {
     video(app, ctx);
 
-    if app.lista_aberta {
+    // O menu fica sempre à vista fora do vídeo; sobre o vídeo, aparece com a
+    // lista ou com os controles, e some junto com eles.
+    let sem_nada_no_ar = app.tocando.is_none() && app.tocando_vod.is_none();
+    if app.aba != Aba::Canais || app.lista_aberta || app.controles_visiveis() || sem_nada_no_ar {
+        menu_do_topo(app, ctx);
+    }
+    // A lista de canais é do "Ao vivo": no acervo ela só roubava espaço das capas.
+    if app.lista_aberta && app.aba == Aba::Canais {
         barra_lateral(app, ctx);
     }
     if app.guia_aberto && app.aba == Aba::Canais {
@@ -425,6 +436,107 @@ unsafe fn estado_padrao_de_opengl(gl: &eframe::glow::Context) {
     gl.bind_texture(eframe::glow::TEXTURE_2D, None);
 }
 
+// MARK: - Menu do topo
+
+/// As seções, do jeito que aparecem no topo. Favoritos só com algum favorito.
+fn abas_do_topo(app: &App) -> Vec<(Aba, &'static str)> {
+    let mut abas = vec![
+        (Aba::Inicio, "Início"),
+        (Aba::Canais, "Ao vivo"),
+        (Aba::Filmes, "Filmes"),
+        (Aba::Series, "Séries"),
+        (Aba::Animes, "Animes"),
+        (Aba::Doramas, "Doramas"),
+    ];
+    if !app.favoritos_vod.is_empty() {
+        abas.push((Aba::Favoritos, "Favoritos"));
+    }
+    if app.liberado {
+        abas.push((Aba::Extras, "Extras"));
+    }
+    abas
+}
+
+fn aba_do_topo(ui: &mut egui::Ui, texto: &str, ativa: bool) -> egui::Response {
+    let galeria = ui.painter().layout_no_wrap(texto.to_string(), forte(14.5), TEXTO);
+    let (rect, resposta) = ui.allocate_exact_size(egui::vec2(galeria.size().x + 28.0, 36.0), Sense::click());
+    let pintor = ui.painter();
+    if ativa {
+        pintor.rect_filled(rect, 18.0, Color32::from_white_alpha(20));
+        pintor.rect_stroke(rect, 18.0, Stroke::new(1.2, ACENTO.gamma_multiply(0.7)));
+    } else if resposta.hovered() {
+        pintor.rect_filled(rect, 18.0, Color32::from_white_alpha(12));
+    }
+    let cor = if ativa { ACENTO } else if resposta.hovered() { TEXTO } else { SECUNDARIO };
+    pintor.galley(rect.center() - galeria.size() / 2.0, galeria, cor);
+    resposta.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Marca, seções e relógio: o mesmo menu em todas as telas, como na TV Box.
+fn menu_do_topo(app: &mut App, ctx: &egui::Context) {
+    egui::TopBottomPanel::top("menu-topo")
+        .exact_height(ALTURA_TOPO)
+        .show_separator_line(false)
+        .frame(egui::Frame::none().fill(TOPO).inner_margin(egui::Margin::symmetric(18.0, 0.0)))
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                // Marca: monograma no acento e o nome.
+                let (marca, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                ui.painter().rect_filled(marca, 9.0, ACENTO);
+                ui.painter().text(marca.center(), Align2::CENTER_CENTER, "S", forte(18.0), PAINEL);
+                ui.label(egui::RichText::new("Saimo TV").font(forte(16.0)).color(TEXTO));
+                ui.add_space(20.0);
+
+                let mut escolhida = None;
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (aba, nome) in abas_do_topo(app) {
+                    if aba_do_topo(ui, nome, app.aba == aba).clicked() {
+                        escolhida = Some(aba);
+                    }
+                }
+                if let Some(aba) = escolhida {
+                    if aba == Aba::Canais {
+                        app.lista_aberta = true;
+                    }
+                    app.abrir_secao(aba);
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(epg::hora_local(epg::agora())).font(forte(17.0)).color(TEXTO));
+                    ui.add_space(10.0);
+                    if botao_icone(ui, Icone::Ajuda, 16.0, "Atalhos do teclado (H)").clicked() {
+                        app.ajuda_aberta = true;
+                    }
+                });
+            });
+        });
+    // O relógio anda sozinho.
+    ctx.request_repaint_after(Duration::from_secs(20));
+}
+
+/// A imagem de fundo do app (a mesma da TV Box), carregada uma vez.
+fn fundo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new("fundo-do-app");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(t);
+    }
+    let imagem = image::load_from_memory(include_bytes!("../assets/fundo.jpg")).ok()?.to_rgba8();
+    let (w, h) = imagem.dimensions();
+    let cor = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], imagem.as_raw());
+    let textura = ctx.load_texture("fundo-do-app", cor, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, textura.clone()));
+    Some(textura)
+}
+
+/// Pinta o fundo cobrindo a área, escurecido para o texto ler bem.
+fn pintar_fundo(ui: &egui::Ui, area: Rect) {
+    ui.painter().rect_filled(area, 0.0, PAINEL);
+    if let Some(textura) = fundo(ui.ctx()) {
+        pintar_cobrindo(ui, &textura, area, 0.0, 0.5);
+        ui.painter().rect_filled(area, 0.0, Color32::from_rgba_premultiplied(6, 10, 20, 150));
+    }
+}
+
 // MARK: - Barra lateral
 
 /// Uma linha da lista: título de seção ou canal. Altura única, para desenhar
@@ -445,45 +557,19 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
                 .inner_margin(egui::Margin { left: 10.0, right: 10.0, top: 12.0, bottom: 8.0 }),
         )
         .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Canais").font(forte(20.0)).color(TEXTO));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{}", app.visiveis().len())).font(forte(13.0)).color(ACENTO));
+                });
+            });
+            ui.add_space(6.0);
             let busca = campo_de_busca(ui, &mut app.busca, "Buscar canal", "busca-canais");
             if busca.changed() {
                 if let Some(primeiro) = app.visiveis().first() {
                     app.foco = *primeiro;
                 }
             }
-
-            // Acervo, como no Mac: pílulas lado a lado, quebrando linha.
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("Acervo").font(forte(11.0)).color(SECUNDARIO));
-            ui.add_space(2.0);
-            let mut secoes: Vec<(Aba, Icone, &str)> = vec![
-                (Aba::Inicio, Icone::Preencher, "Início"),
-                (Aba::Filmes, Icone::Filmes, "Filmes"),
-                (Aba::Series, Icone::Series, "Séries"),
-                (Aba::Animes, Icone::Series, "Animes"),
-                (Aba::Doramas, Icone::Series, "Doramas"),
-            ];
-            if !app.favoritos_vod.is_empty() {
-                secoes.push((Aba::Favoritos, Icone::Estrela, "Favoritos"));
-            }
-            if app.liberado {
-                secoes.push((Aba::Extras, Icone::Cadeado, "Extras"));
-            }
-            let mut escolhida = None;
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                for (aba, icone, nome) in &secoes {
-                    if pilula(ui, Some(*icone), nome, app.aba == *aba).clicked() {
-                        escolhida = Some(if app.aba == *aba { Aba::Canais } else { *aba });
-                    }
-                }
-            });
-            if let Some(aba) = escolhida {
-                app.abrir_secao(aba);
-            }
-            ui.add_space(8.0);
-            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, LINHA));
-            ui.add_space(4.0);
 
             let visiveis = app.visiveis();
             let mut itens = Vec::with_capacity(visiveis.len() + 12);
@@ -502,6 +588,30 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
                 itens.push(Item::Canal(*indice));
             }
 
+            // As seções em chips: um clique leva a lista até ela, em vez de
+            // rolar novecentos canais.
+            ui.add_space(8.0);
+            let secoes: Vec<(String, usize)> = itens
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| match item {
+                    Item::Secao(nome) => Some((nome.clone(), i)),
+                    Item::Canal(_) => None,
+                })
+                .collect();
+            let mut pular_para: Option<f32> = None;
+            egui::ScrollArea::horizontal().id_salt("secoes-canais").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                    for (nome, posicao) in &secoes {
+                        if pilula(ui, None, nome, false).clicked() {
+                            pular_para = Some(*posicao as f32 * (ALTURA_LINHA + ui.spacing().item_spacing.y));
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
+
             let tocando = app.tocando.as_ref().map(|t| t.canal);
             let foco = app.foco;
             let mut clicado = None;
@@ -511,20 +621,24 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
             });
 
             let altura_rodape = 26.0;
-            egui::ScrollArea::vertical()
+            let mut rolagem = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height(ui.available_height() - altura_rodape)
+                .max_height(ui.available_height() - altura_rodape);
+            if let Some(y) = pular_para {
+                rolagem = rolagem.vertical_scroll_offset(y);
+            }
+            rolagem
                 .show_rows(ui, ALTURA_LINHA, itens.len(), |ui, faixa| {
                     for item in &itens[faixa] {
                         match item {
                             Item::Secao(nome) => {
                                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ALTURA_LINHA), Sense::hover());
                                 ui.painter().text(
-                                    Pos2::new(rect.left() + 6.0, rect.bottom() - 8.0),
+                                    Pos2::new(rect.left() + 6.0, rect.bottom() - 10.0),
                                     Align2::LEFT_BOTTOM,
-                                    nome,
-                                    forte(11.0),
-                                    SECUNDARIO,
+                                    nome.to_uppercase(),
+                                    forte(11.5),
+                                    ACENTO,
                                 );
                             }
                             Item::Canal(indice) => {
@@ -536,7 +650,7 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
                                 let textura = logo.as_ref().and_then(|url| app.logo(url));
                                 let no_ar = epg::agora_e_depois(&nome).map(|(p, _)| p);
                                 let (resposta, estrela) = linha_do_canal(
-                                    ui, &nome, fontes, textura, favorito,
+                                    ui, *indice + 1, &nome, fontes, textura, favorito,
                                     Some(*indice) == tocando, *indice == foco, no_ar.as_ref(),
                                 );
                                 if estrela {
@@ -566,19 +680,8 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{} canais", visiveis.len()))
-                            .font(normal(11.0))
-                            .color(TERCIARIO),
-                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(egui::Label::new(egui::RichText::new("Atalhos (H)").font(normal(11.0)).color(AZUL)).sense(Sense::click()))
-                            .on_hover_text("Todos os comandos do teclado")
-                            .clicked()
-                        {
-                            app.ajuda_aberta = true;
-                        }
+                        ui.label(egui::RichText::new("Enter assiste · S favorita").font(normal(11.0)).color(TERCIARIO));
                     });
                 });
             });
@@ -590,6 +693,7 @@ fn barra_lateral(app: &mut App, ctx: &egui::Context) {
 #[allow(clippy::too_many_arguments)]
 fn linha_do_canal(
     ui: &mut egui::Ui,
+    numero: usize,
     nome: &str,
     fontes: usize,
     logo: Option<egui::TextureHandle>,
@@ -600,19 +704,35 @@ fn linha_do_canal(
 ) -> (egui::Response, bool) {
     let (rect, resposta) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ALTURA_LINHA), Sense::click());
     let pintor = ui.painter().clone();
-    let caixa = rect.shrink2(egui::vec2(0.0, 2.0));
+    let caixa = rect.shrink2(egui::vec2(0.0, 3.0));
+    // No ar: fundo tingido e a barra do acento à esquerda. Em foco: contorno.
     if tocando {
-        pintor.rect_filled(caixa, 7.0, AZUL);
-    } else if focado {
-        pintor.rect_filled(caixa, 7.0, Color32::from_white_alpha(28));
+        pintor.rect_filled(caixa, 10.0, ACENTO.gamma_multiply(0.16));
+        pintor.rect_filled(
+            Rect::from_min_size(Pos2::new(caixa.left(), caixa.top() + 10.0), egui::vec2(3.0, caixa.height() - 20.0)),
+            1.5,
+            ACENTO,
+        );
     } else if resposta.hovered() {
-        pintor.rect_filled(caixa, 7.0, Color32::from_white_alpha(12));
+        pintor.rect_filled(caixa, 10.0, Color32::from_white_alpha(10));
+    }
+    if focado {
+        pintor.rect_stroke(caixa, 10.0, Stroke::new(1.5, ACENTO));
     }
 
-    // Logo em ladrilho arredondado, como no Mac.
-    let lado = 30.0;
-    let ladrilho = Rect::from_min_size(Pos2::new(caixa.left() + 6.0, caixa.center().y - lado / 2.0), Vec2::splat(lado));
-    pintor.rect_filled(ladrilho, 8.0, Color32::from_white_alpha(20));
+    // Número do canal, como no controle: é o que se digita para ir direto.
+    pintor.text(
+        Pos2::new(caixa.left() + 30.0, caixa.center().y),
+        Align2::RIGHT_CENTER,
+        numero.to_string(),
+        normal(11.5),
+        if tocando { ACENTO } else { TERCIARIO },
+    );
+
+    // Logo em ladrilho arredondado.
+    let lado = 38.0;
+    let ladrilho = Rect::from_min_size(Pos2::new(caixa.left() + 38.0, caixa.center().y - lado / 2.0), Vec2::splat(lado));
+    pintor.rect_filled(ladrilho, 10.0, Color32::from_white_alpha(18));
     match logo {
         Some(textura) => {
             egui::Image::new(&textura)
@@ -626,8 +746,8 @@ fn linha_do_canal(
         }
     }
 
-    let x = ladrilho.right() + 10.0;
-    let secundaria = if tocando { Color32::from_white_alpha(200) } else { SECUNDARIO };
+    let x = ladrilho.right() + 12.0;
+    let secundaria = SECUNDARIO;
     let direita = caixa.right() - 26.0;
     let largura_texto = (direita - x).max(20.0);
     let cortar = |texto: &str, fonte: FontId| -> std::sync::Arc<egui::Galley> {
@@ -636,16 +756,16 @@ fn linha_do_canal(
         ui.fonts(|f| f.layout_job(job))
     };
     if let Some(programa) = no_ar {
-        let titulo = cortar(nome, forte(13.0));
-        pintor.galley(Pos2::new(x, caixa.top() + 4.0), titulo, TEXTO);
-        let subtitulo = cortar(&programa.titulo, normal(10.5));
-        pintor.galley(Pos2::new(x, caixa.top() + 21.0), subtitulo, secundaria);
-        let trilho = Rect::from_min_size(Pos2::new(x, caixa.bottom() - 6.0), egui::vec2(largura_texto, 2.0));
-        pintor.rect_filled(trilho, 1.0, Color32::from_white_alpha(35));
-        let feito = Rect::from_min_size(trilho.min, egui::vec2(largura_texto * programa.andamento(epg::agora()), 2.0));
-        pintor.rect_filled(feito, 1.0, if tocando { Color32::WHITE } else { AZUL });
+        let titulo = cortar(nome, forte(14.0));
+        pintor.galley(Pos2::new(x, caixa.top() + 6.0), titulo, TEXTO);
+        let subtitulo = cortar(&programa.titulo, normal(11.5));
+        pintor.galley(Pos2::new(x, caixa.top() + 25.0), subtitulo, secundaria);
+        let trilho = Rect::from_min_size(Pos2::new(x, caixa.bottom() - 8.0), egui::vec2(largura_texto, 3.0));
+        pintor.rect_filled(trilho, 1.5, Color32::from_white_alpha(28));
+        let feito = Rect::from_min_size(trilho.min, egui::vec2(largura_texto * programa.andamento(epg::agora()), 3.0));
+        pintor.rect_filled(feito, 1.5, ACENTO);
     } else {
-        let titulo = cortar(nome, forte(13.0));
+        let titulo = cortar(nome, forte(14.0));
         pintor.galley(Pos2::new(x, caixa.center().y - titulo.size().y / 2.0), titulo, TEXTO);
         let _ = fontes;
     }
@@ -657,7 +777,7 @@ fn linha_do_canal(
         let alvo = Rect::from_center_size(centro, Vec2::splat(20.0));
         let sobre = ui.rect_contains_pointer(alvo);
         if favorito {
-            desenhar_estrela_cheia(&pintor, centro, 12.0, if tocando { Color32::WHITE } else { AMARELO });
+            desenhar_estrela_cheia(&pintor, centro, 12.0, AMARELO);
         } else {
             pintar_icone(&pintor, Icone::Estrela, centro, 12.0, if sobre { TEXTO } else { SECUNDARIO });
         }
@@ -776,16 +896,6 @@ fn palco(app: &mut App, ctx: &egui::Context) {
             if !app.controles_visiveis() {
                 return;
             }
-
-            // Botão de atalhos no canto, como lembrete permanente.
-            let canto = Rect::from_min_size(Pos2::new(area.right() - 118.0, area.top() + 12.0), egui::vec2(106.0, 28.0));
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(canto), |ui| {
-                egui::Frame::none().fill(VIDRO).rounding(8.0).inner_margin(egui::Margin::symmetric(4.0, 1.0)).show(ui, |ui| {
-                    if botao_rotulo(ui, Icone::Ajuda, "Atalhos", "Todos os comandos (H ou F1)").clicked() {
-                        app.ajuda_aberta = true;
-                    }
-                });
-            });
 
             // Posições fixas, de baixo para cima: a barra e, acima dela, a
             // faixa do que está no ar. Empilhadas pelo layout, uma cobria a outra.
@@ -1311,8 +1421,9 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
         return;
     }
     egui::CentralPanel::default()
-        .frame(egui::Frame::none().fill(Color32::from_rgb(20, 20, 22)).inner_margin(egui::Margin::symmetric(24.0, 16.0)))
+        .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(28.0, 18.0)))
         .show(ctx, |ui| {
+            pintar_fundo(ui, ui.ctx().screen_rect());
             let titulo = match app.aba {
                 Aba::Inicio => "Início",
                 Aba::Filmes => "Filmes",
@@ -1323,28 +1434,16 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
                 Aba::Extras => "Extras",
                 Aba::Canais => "",
             };
+            // As seções moram no menu do topo; aqui ficam o nome e a busca.
             ui.horizontal(|ui| {
-                if botao_rotulo(ui, Icone::Voltar, "Voltar ao vídeo", "Fechar o acervo (Esc)").clicked() {
-                    app.abrir_secao(Aba::Canais);
-                    return;
-                }
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(titulo).font(forte(22.0)));
-                ui.add_space(14.0);
-                // As seções ao lado da busca, e não só na lateral: são as duas
-                // coisas que alguém quer enquanto procura, e ficam juntas.
-                let mut escolhida_secao = None;
-                for (aba, nome) in secoes_do_acervo(app) {
-                    if pilula(ui, None, nome, app.aba == aba).clicked() {
-                        escolhida_secao = Some(aba);
-                    }
-                }
-                if let Some(aba) = escolhida_secao {
-                    app.abrir_secao(aba);
-                }
+                ui.label(egui::RichText::new(titulo).font(forte(28.0)).color(TEXTO));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.set_max_width(320.0);
-                    let dica = if matches!(app.aba, Aba::Series | Aba::Animes | Aba::Doramas) { "Buscar série" } else { "Buscar filme" };
+                    let dica = match app.aba {
+                        Aba::Series | Aba::Animes | Aba::Doramas => "Buscar série",
+                        Aba::Inicio => "Buscar filme ou série",
+                        _ => "Buscar filme",
+                    };
                     if campo_de_busca(ui, &mut app.busca_vod, dica, "busca-acervo").changed() {
                         app.foco_vod = 0;
                     }
@@ -1406,7 +1505,7 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
             }
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Setas escolhem · Enter abre · S favorita · botão direito também favorita · Esc volta ao vídeo")
+                egui::RichText::new("Setas escolhem · Enter abre · I mostra a ficha · S favorita · botão direito também favorita")
                     .font(normal(11.0))
                     .color(TERCIARIO),
             );
@@ -1428,8 +1527,50 @@ fn acervo(app: &mut App, ctx: &egui::Context) {
             if !matches!(app.aba, Aba::Inicio | Aba::Extras) && app.busca_vod.trim().is_empty() {
                 continuar_assistindo(app, ui);
             }
+            if matches!(app.aba, Aba::Filmes | Aba::Series) && app.busca_vod.trim().is_empty() && app.genero.is_empty() {
+                destaques_da_secao(app, ui);
+                ui.label(egui::RichText::new(if app.aba == Aba::Series { "Todas as séries" } else { "Todos os filmes" }).font(forte(16.0)));
+                ui.add_space(6.0);
+            }
             grade(app, ui);
         });
+}
+
+/// A primeira fileira de destaques do tipo da seção, acima da grade: abrir
+/// Filmes mostra o que está em alta, e não uma lista em ordem alfabética.
+fn destaques_da_secao(app: &mut App, ui: &mut egui::Ui) {
+    let serie = app.aba == Aba::Series;
+    let Some((nome, itens)) = app.filas.iter().find_map(|f| {
+        let do_tipo: Vec<_> = f.itens.iter().filter(|i| if serie { i.tipo == 's' } else { i.tipo == 'f' }).cloned().collect();
+        (do_tipo.len() >= 4).then(|| (f.titulo.clone(), do_tipo))
+    }) else { return };
+    ui.label(egui::RichText::new(nome).font(forte(16.0)));
+    ui.add_space(6.0);
+    let mut aberto = None;
+    egui::ScrollArea::horizontal().id_salt("destaques-da-secao").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            for item in itens.iter().take(20) {
+                let capa = app.capa(&item.titulo, item.serie());
+                let favorito = app.favoritos_vod.iter().any(|t| *t == item.titulo);
+                let resposta = cartao(ui, &item.titulo, &item.ano, capa, favorito, false, None, 132.0, 238.0);
+                if resposta.clicked() {
+                    aberto = Some(item.clone());
+                }
+            }
+        });
+    });
+    ui.add_space(14.0);
+    if let Some(item) = aberto {
+        let destino = crate::Destino::Item(crate::ItemNaTela {
+            titulo: item.titulo.clone(),
+            detalhe: item.ano.clone(),
+            serie: item.serie(),
+            letra: item.letra.clone(),
+        });
+        let serie = item.serie();
+        app.abrir_ficha(item.titulo, serie, destino);
+    }
 }
 
 fn continuar_assistindo(app: &mut App, ui: &mut egui::Ui) {
