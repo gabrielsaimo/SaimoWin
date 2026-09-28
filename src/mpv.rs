@@ -48,6 +48,13 @@ struct MpvEvent {
 struct MpvEventEndFile {
     reason: c_int,
     error: c_int,
+    /// Qual item da playlist acabou (libmpv 0.33+).
+    playlist_entry_id: i64,
+}
+
+#[repr(C)]
+struct MpvEventStartFile {
+    playlist_entry_id: i64,
 }
 
 const PARAM_INVALID: c_int = 0;
@@ -56,9 +63,11 @@ const PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const PARAM_OPENGL_FBO: c_int = 3;
 const PARAM_FLIP_Y: c_int = 4;
 
+const EVENT_START_FILE: c_int = 6;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
 const EVENT_PLAYBACK_RESTART: c_int = 21;
+const END_FILE_EOF: c_int = 0;
 const END_FILE_ERROR: c_int = 4;
 
 /// O que a tela precisa saber do player, sem falar C.
@@ -70,6 +79,37 @@ pub enum Aviso {
     Falhou,
     /// Acabou sozinho (VOD) ou o servidor cortou.
     Fim,
+}
+
+/// Decide o que um fim de arquivo significa.
+///
+/// O `loadfile replace` encerra o arquivo anterior com motivo STOP, e esse
+/// aviso chega depois que a fonte nova já começou. Tratado como "fim", ele
+/// derrubava a fonte nova, que derrubava a seguinte — e o canal passava por
+/// todas as fontes em um segundo e dizia que estava fora do ar. Agora só conta
+/// o fim do arquivo que está de fato no ar, e só por erro ou fim de verdade.
+#[derive(Default)]
+pub struct Vigia {
+    atual: Option<i64>,
+}
+
+impl Vigia {
+    pub fn comecou(&mut self, item: i64) {
+        self.atual = Some(item);
+    }
+
+    pub fn acabou(&mut self, item: i64, motivo: c_int) -> Option<Aviso> {
+        // Fim de um arquivo que já foi substituído: aviso atrasado, ignora.
+        if self.atual.is_some_and(|a| a != item) {
+            return None;
+        }
+        match motivo {
+            END_FILE_ERROR => Some(Aviso::Falhou),
+            END_FILE_EOF => Some(Aviso::Fim),
+            // STOP, QUIT e REDIRECT: foi o próprio app que trocou ou parou.
+            _ => None,
+        }
+    }
 }
 
 struct Simbolos {
@@ -250,24 +290,32 @@ impl Mpv {
             let simbolos = simbolos.clone();
             let handle = handle.clone();
             let emissor = emissor.clone();
-            std::thread::spawn(move || loop {
+            std::thread::spawn(move || {
+                let mut vigia = Vigia::default();
+                loop {
                 let evento = unsafe { (simbolos.wait_event)(handle.0, 1.0) };
                 if evento.is_null() {
                     continue;
                 }
                 let evento = unsafe { &*evento };
                 let aviso = match evento.event_id {
-                    EVENT_FILE_LOADED | EVENT_PLAYBACK_RESTART => Some(Aviso::Tocando),
-                    EVENT_END_FILE => {
-                        let fim = unsafe { &*(evento.data as *const MpvEventEndFile) };
-                        Some(if fim.reason == END_FILE_ERROR { Aviso::Falhou } else { Aviso::Fim })
+                    EVENT_START_FILE if !evento.data.is_null() => {
+                        let inicio = unsafe { &*(evento.data as *const MpvEventStartFile) };
+                        vigia.comecou(inicio.playlist_entry_id);
+                        None
                     }
+                    EVENT_END_FILE if !evento.data.is_null() => {
+                        let fim = unsafe { &*(evento.data as *const MpvEventEndFile) };
+                        vigia.acabou(fim.playlist_entry_id, fim.reason)
+                    }
+                    EVENT_FILE_LOADED | EVENT_PLAYBACK_RESTART => Some(Aviso::Tocando),
                     _ => None,
                 };
                 if let Some(aviso) = aviso {
                     if emissor.send(aviso).is_err() {
                         return;
                     }
+                }
                 }
             });
         }
@@ -459,5 +507,54 @@ impl Drop for Mpv {
             (self.simbolos.wakeup)(self.handle.0);
             (self.simbolos.terminate_destroy)(self.handle.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    const STOP: c_int = 2;
+    const REDIRECT: c_int = 5;
+
+    #[test]
+    fn trocar_de_fonte_nao_derruba_a_nova() {
+        // Canal A tocando (item 1); o app manda tocar B (item 2). O mpv avisa,
+        // nesta ordem: B começou, A acabou por STOP.
+        let mut v = Vigia::default();
+        v.comecou(1);
+        v.comecou(2);
+        assert_eq!(v.acabou(1, STOP), None);
+        // Mesmo um erro atrasado do arquivo antigo não conta.
+        assert_eq!(v.acabou(1, END_FILE_ERROR), None);
+    }
+
+    #[test]
+    fn stop_do_proprio_arquivo_nao_e_queda() {
+        let mut v = Vigia::default();
+        v.comecou(7);
+        assert_eq!(v.acabou(7, STOP), None);
+        assert_eq!(v.acabou(7, REDIRECT), None);
+    }
+
+    #[test]
+    fn erro_e_fim_do_arquivo_no_ar_contam() {
+        let mut v = Vigia::default();
+        v.comecou(3);
+        assert_eq!(v.acabou(3, END_FILE_ERROR), Some(Aviso::Falhou));
+        assert_eq!(v.acabou(3, END_FILE_EOF), Some(Aviso::Fim));
+    }
+
+    #[test]
+    fn rajada_de_trocas_so_ouve_a_ultima() {
+        // Pular canais depressa: cinco loadfile seguidos.
+        let mut v = Vigia::default();
+        for item in 1..=5 {
+            v.comecou(item);
+        }
+        for antigo in 1..5 {
+            assert_eq!(v.acabou(antigo, STOP), None);
+        }
+        assert_eq!(v.acabou(5, END_FILE_ERROR), Some(Aviso::Falhou));
     }
 }

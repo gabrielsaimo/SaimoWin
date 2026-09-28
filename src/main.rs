@@ -19,6 +19,7 @@ mod catalogo;
 mod mpv;
 mod progresso;
 mod pulos;
+mod bateria;
 mod rede;
 mod telemetria;
 
