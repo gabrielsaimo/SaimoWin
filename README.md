@@ -17,6 +17,8 @@ abrem com a fileira "Em alta" e a grade vem dos lançamentos para trás.
 
 ## Novidades da 2.0
 
+- **Legendas do OpenSubtitles** em filmes e séries (pt-BR, pt-PT, inglês, espanhol), com
+  ajuste de sincronia, no menu A/V (`src/legendas.rs`); sem chave nem cadastro
 - **Pular abertura e recapitulação** com os tempos do
   [TheIntroDB](https://theintrodb.org) (`src/pulos.rs`): o botão aparece só
   quando o trecho foi marcado para aquele episódio. Enter pula.
@@ -55,6 +57,7 @@ Para ver as telas no Mac sem o mpv: `SAIMO_DEMO=1 SAIMO_ABA=filmes cargo run`.
 | `src/telemetria.rs` | Saimo Monitor, plataforma `windows` |
 | `src/atualizacao.rs` | versão nova no GitHub, download pelo navegador |
 | `src/pulos.rs` | TheIntroDB: abertura, recapitulação e créditos |
+| `src/legendas.rs` | OpenSubtitles pelo id do TMDB (via `vod/imdb/`) |
 | `src/vod.rs`, `src/progresso.rs` | acervo e onde cada título parou |
 
 ## Versões

@@ -1189,7 +1189,10 @@ fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
     let videos = mpv.faixas("video");
     let audios = mpv.faixas("audio");
     let legendas = mpv.faixas("sub");
-    if videos.is_empty() && audios.is_empty() && legendas.is_empty() { return; }
+    // Legendas do OpenSubtitles do filme ou episódio que está tocando.
+    let externas: Vec<crate::legendas::Opcao> =
+        app.tocando_vod.as_ref().map(|t| t.legendas.clone()).unwrap_or_default();
+    if videos.is_empty() && audios.is_empty() && legendas.is_empty() && externas.is_empty() { return; }
 
     ui.menu_button(
         egui::RichText::new("A/V").font(forte(11.0)),
@@ -1226,6 +1229,39 @@ fn menu_de_faixas(app: &mut App, ui: &mut egui::Ui) {
                     if ui.selectable_label(faixa.selecionada, &faixa.titulo).clicked() {
                         mpv.escolher_faixa("sub", Some(&faixa.id)); ui.close();
                     }
+                }
+            }
+
+            if !externas.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Legendas · OpenSubtitles").font(forte(11.0)).color(SECUNDARIO));
+                let (escolhida, atraso, aviso) = app
+                    .tocando_vod
+                    .as_ref()
+                    .map(|t| (t.legenda_escolhida.as_ref().map(|(o, _)| o.id.clone()), t.legenda_atraso, t.legenda_aviso.clone()))
+                    .unwrap_or((None, 0.0, None));
+                if ui.selectable_label(escolhida.is_none() && !legendas.iter().any(|f| f.selecionada), "Desligadas").clicked() {
+                    app.desligar_legendas(); ui.close();
+                }
+                for opcao in &externas {
+                    if ui.selectable_label(escolhida.as_deref() == Some(opcao.id.as_str()), &opcao.rotulo).clicked() {
+                        app.escolher_legenda(opcao.clone()); ui.close();
+                    }
+                }
+                if escolhida.is_some() {
+                    ui.horizontal(|ui| {
+                        if ui.button("−0,5 s").on_hover_text("Adiantar a legenda").clicked() {
+                            app.ajustar_atraso_legenda(-0.5);
+                        }
+                        let rotulo = if atraso == 0.0 { "Sincronia original".to_string() } else { format!("{atraso:+.1} s").replace('.', ",") };
+                        ui.label(egui::RichText::new(rotulo).font(forte(11.0)).color(SECUNDARIO));
+                        if ui.button("+0,5 s").on_hover_text("Atrasar a legenda").clicked() {
+                            app.ajustar_atraso_legenda(0.5);
+                        }
+                    });
+                }
+                if let Some(aviso) = aviso {
+                    ui.label(egui::RichText::new(aviso).font(forte(11.0)).color(SECUNDARIO));
                 }
             }
         },

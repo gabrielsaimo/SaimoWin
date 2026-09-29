@@ -18,6 +18,7 @@ mod catalogo;
 mod mpv;
 mod progresso;
 mod pulos;
+mod legendas;
 mod bateria;
 mod rede;
 mod telemetria;
@@ -75,6 +76,10 @@ enum Recado {
     /// Os trabalhos de um ator, como o TMDB os devolve. O cruzamento com o
     /// acervo é feito na thread do desenho, que é onde o índice está.
     Filmografia(u32, Vec<ficha::Credito>),
+    /// As legendas do OpenSubtitles para o título que está tocando.
+    Legendas(String, Vec<legendas::Opcao>),
+    /// O arquivo de uma legenda foi baixado (ou não).
+    LegendaPronta(String, legendas::Opcao, Option<std::path::PathBuf>),
     /// Quem é o ator aberto: foto, biografia, de onde é.
     Perfil(u32, Option<ficha::Perfil>),
     /// Onde pular no que está tocando, pelo TheIntroDB.
@@ -138,6 +143,11 @@ pub struct TocandoVod {
     pub episodio: Option<EpisodioTocando>,
     /// Abertura, recapitulação e créditos, quando o TheIntroDB conhece.
     pub marcas: Option<pulos::Marcas>,
+    /// Legendas do OpenSubtitles, a escolhida (com o arquivo baixado) e o atraso.
+    pub legendas: Vec<legendas::Opcao>,
+    pub legenda_escolhida: Option<(legendas::Opcao, String)>,
+    pub legenda_atraso: f64,
+    pub legenda_aviso: Option<String>,
     /// A última posição vista (posição, duração): no fim o mpv já não diz.
     pub visto: (f64, f64),
     /// O cartão do próximo episódio: quando subiu, e se foi dispensado.
@@ -571,18 +581,18 @@ impl App {
             self.tocando_vod = None;
             return;
         };
-        mpv.tocar(&url, None, None);
+        // Trocar de fonte do mesmo título mantém o episódio, as marcas e a
+        // legenda escolhida — que segue junto para o arquivo novo.
+        let anterior = self.tocando_vod.take().filter(|t| t.titulo == titulo);
+        let legenda = anterior.as_ref().and_then(|t| t.legenda_escolhida.as_ref().map(|(_, c)| c.clone()));
+        mpv.tocar_com_legenda(&url, None, None, legenda.as_deref());
         mpv.pausa(false);
         self.pausado = false;
         self.tocando = None;
         telemetria::comecou("vod", &titulo, &url, fonte + 1, nova);
-        // Trocar de fonte do mesmo título mantém o episódio e as marcas.
-        let (episodio, marcas) = self
-            .tocando_vod
-            .take()
-            .filter(|t| t.titulo == titulo)
-            .map(|t| (t.episodio, t.marcas))
-            .unwrap_or((None, None));
+        let (episodio, marcas, legendas, legenda_escolhida) = anterior
+            .map(|t| (t.episodio, t.marcas, t.legendas, t.legenda_escolhida))
+            .unwrap_or((None, None, Vec::new(), None));
         self.tocando_vod = Some(TocandoVod {
             titulo,
             urls,
@@ -591,6 +601,10 @@ impl App {
             confirmado: false,
             episodio,
             marcas,
+            legendas,
+            legenda_escolhida,
+            legenda_atraso: 0.0,
+            legenda_aviso: None,
             visto: (0.0, 0.0),
             proximo_desde: None,
             proximo_dispensado: false,
@@ -613,7 +627,58 @@ impl App {
             versao: episodio.versao.clone(),
             lista,
         });
+        self.pedir_legendas(titulo.clone(), self.generos.id(serie, true), true, episodio.temporada, episodio.numero);
         self.pedir_marcas(titulo, self.generos.id(serie, true), episodio.temporada, episodio.numero);
+    }
+
+    /// Toca um filme e já pede as legendas dele.
+    fn tocar_filme(&mut self, titulo: String, urls: Vec<String>) {
+        self.tocar_vod(titulo.clone(), urls, 0, true);
+        self.pedir_legendas(titulo.clone(), self.generos.id(&titulo, false), false, 0, 0);
+    }
+
+    /// Busca as legendas numa thread; chegam pelo recado. Se a pessoa já
+    /// escolhera um idioma antes, a primeira versão dele liga sozinha.
+    fn pedir_legendas(&self, titulo: String, tmdb: Option<u32>, serie: bool, temporada: u32, numero: u32) {
+        let Some(tmdb) = tmdb else { return };
+        let emissor = self.emissor.clone();
+        std::thread::spawn(move || {
+            let lista = legendas::buscar(tmdb, serie, temporada, numero);
+            if !lista.is_empty() {
+                let _ = emissor.send(Recado::Legendas(titulo, lista));
+            }
+        });
+    }
+
+    /// A pessoa escolheu uma legenda: baixa o arquivo e liga no mpv.
+    pub fn escolher_legenda(&mut self, opcao: legendas::Opcao) {
+        let Some(t) = self.tocando_vod.as_mut() else { return };
+        t.legenda_aviso = Some("Baixando a legenda…".to_string());
+        let (titulo, emissor) = (t.titulo.clone(), self.emissor.clone());
+        std::thread::spawn(move || {
+            let caminho = legendas::baixar(&opcao);
+            let _ = emissor.send(Recado::LegendaPronta(titulo, opcao, caminho));
+        });
+    }
+
+    pub fn desligar_legendas(&mut self) {
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.escolher_faixa("sub", None);
+        }
+        if let Some(t) = self.tocando_vod.as_mut() {
+            t.legenda_escolhida = None;
+            t.legenda_aviso = None;
+        }
+        legendas::guardar_idioma("");
+    }
+
+    /// Soma (ou tira) segundos do atraso da legenda escolhida.
+    pub fn ajustar_atraso_legenda(&mut self, delta: f64) {
+        let Some(t) = self.tocando_vod.as_mut() else { return };
+        t.legenda_atraso = ((t.legenda_atraso + delta) * 100.0).round() / 100.0;
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.atraso_da_legenda(t.legenda_atraso);
+        }
     }
 
     /// Busca as marcas de pular numa thread; chegam pelo recado.
@@ -1077,6 +1142,39 @@ impl App {
                         self.filmografia_carregando = false;
                     }
                 }
+                Recado::Legendas(titulo, lista) => {
+                    let idioma = legendas::idioma_guardado();
+                    let automatica = lista.iter().find(|o| o.idioma == idioma).cloned();
+                    if let Some(t) = self.tocando_vod.as_mut().filter(|t| t.titulo == titulo) {
+                        t.legendas = lista;
+                        if !idioma.is_empty() && t.legenda_escolhida.is_none() {
+                            if let Some(o) = automatica {
+                                self.escolher_legenda(o);
+                            }
+                        }
+                    }
+                }
+                Recado::LegendaPronta(titulo, opcao, caminho) => {
+                    if let (Some(t), Some(mpv)) = (
+                        self.tocando_vod.as_mut().filter(|t| t.titulo == titulo),
+                        self.mpv.as_ref(),
+                    ) {
+                        match caminho {
+                            Some(c) => {
+                                let c = c.to_string_lossy().to_string();
+                                mpv.legenda_externa(&c, &opcao.rotulo, &opcao.idioma[..2]);
+                                mpv.atraso_da_legenda(0.0);
+                                legendas::guardar_idioma(&opcao.idioma);
+                                t.legenda_escolhida = Some((opcao, c));
+                                t.legenda_atraso = 0.0;
+                                t.legenda_aviso = None;
+                            }
+                            None => {
+                                t.legenda_aviso = Some("Não foi possível baixar esta legenda. Tente outra versão.".to_string());
+                            }
+                        }
+                    }
+                }
                 Recado::Marcas(titulo, marcas) => {
                     if let Some(t) = self.tocando_vod.as_mut().filter(|t| t.titulo == titulo) {
                         t.marcas = Some(marcas);
@@ -1524,7 +1622,7 @@ impl App {
             }
         } else if let Some(f) = self.filmes.iter().find(|f| f.titulo == item.titulo).cloned() {
             if let Some((_, urls)) = f.versoes.first().cloned() {
-                self.tocar_vod(f.titulo, urls, 0, true);
+                self.tocar_filme(f.titulo, urls);
             }
             return;
         }
@@ -1545,7 +1643,7 @@ impl App {
         } else if let Some(f) = self.filmes.iter().find(|f| f.titulo == titulo).cloned() {
             self.abrir_ao_chegar = None;
             if let Some((_, urls)) = f.versoes.first().cloned() {
-                self.tocar_vod(f.titulo, urls, 0, true);
+                self.tocar_filme(f.titulo, urls);
             }
         }
     }

@@ -385,16 +385,43 @@ impl Mpv {
     }
 
     pub fn tocar(&self, url: &str, referer: Option<&str>, agente: Option<&str>) {
+        self.tocar_com_legenda(url, referer, agente, None);
+    }
+
+    /// Como `tocar`, com uma legenda externa (arquivo .srt) já ligada à
+    /// abertura. Trocar de fonte do mesmo título passa por aqui: a legenda
+    /// escolhida acompanha, e não some junto com o arquivo anterior.
+    pub fn tocar_com_legenda(&self, url: &str, referer: Option<&str>, agente: Option<&str>, legenda: Option<&str>) {
         self.propriedade("referrer", referer.unwrap_or(""));
         self.propriedade("user-agent", agente.unwrap_or(crate::AGENTE));
+        // O atraso da legenda é do arquivo: o próximo recomeça no original.
+        self.propriedade("sub-delay", "0");
+        let mut opcoes: Vec<String> = Vec::new();
         // Alguns masters HLS são servidos como text/plain e terminam em .txt.
         // Sem a opção por arquivo o FFmpeg os detecta como terminal ANSI e o
         // MPV nunca chega às variantes, áudios ou legendas.
         if url.split('?').next().unwrap_or(url).to_ascii_lowercase().ends_with(".txt") {
-            self.comando(&["loadfile", url, "replace", "-1", "demuxer-lavf-format=hls"]);
-        } else {
-            self.comando(&["loadfile", url, "replace"]);
+            opcoes.push("demuxer-lavf-format=hls".to_string());
         }
+        if let Some(caminho) = legenda {
+            // %N%valor: o caminho pode ter vírgula ou dois-pontos (C:\...).
+            opcoes.push(format!("sub-files=%{}%{}", caminho.len(), caminho));
+        }
+        if opcoes.is_empty() {
+            self.comando(&["loadfile", url, "replace"]);
+        } else {
+            self.comando(&["loadfile", url, "replace", "-1", &opcoes.join(",")]);
+        }
+    }
+
+    /// Liga uma legenda externa ao que já está tocando e a seleciona.
+    pub fn legenda_externa(&self, caminho: &str, titulo: &str, idioma: &str) {
+        self.comando(&["sub-add", caminho, "select", titulo, idioma]);
+    }
+
+    /// Adianta (negativo) ou atrasa (positivo) a legenda, em segundos.
+    pub fn atraso_da_legenda(&self, segundos: f64) {
+        self.propriedade("sub-delay", &format!("{segundos:.2}"));
     }
 
     /// Faixas que o MPV encontrou no master (variantes de vídeo, idiomas e
