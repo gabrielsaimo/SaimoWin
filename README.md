@@ -1,5 +1,9 @@
 # Saimo TV para Windows
 
+<p align="center">
+  Saimo TV: <a href="https://github.com/gabrielsaimo/SaimoTV-Android">TV Box</a> · <a href="https://github.com/gabrielsaimo/Saimo-Cell-V2">Celular</a> · <b>Windows</b> · <a href="https://github.com/gabrielsaimo/SaimoPlayer">Mac e catálogo</a> · <a href="https://github.com/gabrielsaimo/Saimo-TV">Site</a> · <a href="https://github.com/gabrielsaimo">todos os apps</a>
+</p>
+
 Aplicativo nativo: janela, lista e letreiro desenhados pela GPU (egui sobre
 OpenGL) e vídeo pelo mpv. Não há navegador nem página HTML em lugar nenhum.
 
