@@ -57,24 +57,17 @@ a desinstalação pergunta antes de apagá-los.
 O aplicativo avisa quando sai versão nova e abre o download no navegador.
 TXT
 
-echo "==> montando o instalador"
-command -v wixl >/dev/null || { echo "falta o wixl: brew install msitools"; exit 1; }
-rm -f dist/SaimoTV-Instalador.msi
-wixl -a x64 --extdir instalador --ext ui -D Versao="$VERSAO" \
-     -o dist/SaimoTV-Instalador.msi instalador.wxs
+echo "==> montando o zip"
+rm -f dist/SaimoTV-Windows.zip
+cd dist && zip -r SaimoTV-Windows.zip SaimoTV && cd ..
 
 # O wixl não escreve a tabela de caracteres do banco, e sem ela o Windows lê os
 # acentos com a tabela da máquina — "instalação" vira "instalaÃ§Ã£o" em quem
 # não estiver no 1252. O texto já sai gravado em 1252; isto só o diz.
-printf '\r\n\r\n1252\t_ForceCodepage\r\n' > dist/_ForceCodepage.idt
-msibuild dist/SaimoTV-Instalador.msi -i dist/_ForceCodepage.idt
-rm -f dist/_ForceCodepage.idt
 if [ -n "${SAIMO_ASSINAR:-}" ]; then
-  "$SAIMO_ASSINAR" "dist/SaimoTV-Instalador.msi"
-else
-  echo 'AVISO: pacote de teste SEM assinatura de editor; não foi confirmado como falso positivo.'
+  echo 'AVISO: O zip em si não é assinado, os arquivos dentro dele foram.'
 fi
-shasum -a 256 'dist/SaimoTV/Saimo TV.exe' dist/SaimoTV/libmpv-2.dll dist/SaimoTV-Instalador.msi > dist/SHA256SUMS.txt
+shasum -a 256 'dist/SaimoTV/Saimo TV.exe' dist/SaimoTV/libmpv-2.dll dist/SaimoTV-Windows.zip > dist/SHA256SUMS.txt
 
-[ -f dist/SaimoTV-Instalador.msi ] || { echo "o instalador não foi gerado"; exit 1; }
-echo "pronto: dist/SaimoTV-Instalador.msi ($(du -h dist/SaimoTV-Instalador.msi | cut -f1))"
+[ -f dist/SaimoTV-Windows.zip ] || { echo "o zip não foi gerado"; exit 1; }
+echo "pronto: dist/SaimoTV-Windows.zip ($(du -h dist/SaimoTV-Windows.zip | cut -f1))"
