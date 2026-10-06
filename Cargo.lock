@@ -2162,12 +2162,13 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "saimo-tv"
-version = "2.0.5"
+version = "2.0.7"
 dependencies = [
  "eframe",
  "egui",
  "image",
  "libloading 0.9.0",
+ "serde",
  "serde_json",
  "ureq",
 ]
@@ -2212,6 +2213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

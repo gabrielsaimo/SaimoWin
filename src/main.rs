@@ -58,6 +58,7 @@ fn main() -> eframe::Result<()> {
 enum Recado {
     Catalogo(Vec<Canal>),
     Restritos(Vec<Canal>),
+    Eventos(Vec<eventos::Evento>),
     Logo(String, egui::ColorImage),
     Atualizacao(atualizacao::Versao),
     Guia,
@@ -99,6 +100,7 @@ pub enum Aba {
     Doramas,
     Favoritos,
     Extras,
+    Eventos,
 }
 
 impl Aba {
@@ -281,6 +283,8 @@ struct App {
     pub perfil: Option<ficha::Perfil>,
     pub filmografia: Vec<ficha::Trabalho>,
     pub filmografia_carregando: bool,
+    pub eventos: Vec<eventos::Evento>,
+    pub eventos_carregados: bool,
 }
 
 impl App {
@@ -420,6 +424,8 @@ impl App {
             perfil: None,
             filmografia: Vec::new(),
             filmografia_carregando: false,
+            eventos: Vec::new(),
+            eventos_carregados: false,
         };
         app.reordenar();
         // Só para conferir telas fora do Windows: SAIMO_ABA=inicio|filmes|series.
@@ -1105,6 +1111,10 @@ impl App {
             match recado {
                 Recado::Catalogo(lista) => self.trocar_lista(lista, false),
                 Recado::Restritos(lista) => self.trocar_lista(lista, true),
+                Recado::Eventos(eventos) => {
+                    self.eventos = eventos;
+                    self.eventos_carregados = true;
+                }
                 Recado::Logo(url, imagem) => {
                     let textura = ctx.load_texture(&url, imagem, egui::TextureOptions::LINEAR);
                     if url.starts_with("342|") {
@@ -1838,6 +1848,19 @@ impl App {
             });
             return;
         }
+        if aba == Aba::Eventos {
+            if !self.eventos_carregados {
+                let emissor = self.emissor.clone();
+                std::thread::spawn(move || {
+                    if let Some(eventos) = eventos::baixar() {
+                        let _ = emissor.send(Recado::Eventos(eventos));
+                    } else {
+                        let _ = emissor.send(Recado::Eventos(Vec::new()));
+                    }
+                });
+            }
+            return;
+        }
         if aba != Aba::Canais && self.filmes.is_empty() && self.series.is_empty() {
             let letra = self.letra.clone();
             self.letra.clear();
@@ -2012,6 +2035,8 @@ impl eframe::App for App {
 mod epg;
 mod vod;
 mod tela;
+mod eventos;
+
 
 /// Um nome de título de verdade tem algo além do ano entre parênteses.
 fn tem_nome(titulo: &str) -> bool {

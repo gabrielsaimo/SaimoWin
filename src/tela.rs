@@ -1461,6 +1461,7 @@ fn acervo(app: &mut App, ui_pai: &mut egui::Ui) {
                 Aba::Doramas => "Doramas",
                 Aba::Favoritos => "Favoritos",
                 Aba::Extras => "+18",
+                Aba::Eventos => "Eventos",
                 Aba::Canais => "",
             };
             // As seções moram no menu do topo; aqui ficam o nome e a busca.
@@ -1471,6 +1472,7 @@ fn acervo(app: &mut App, ui_pai: &mut egui::Ui) {
                     let dica = match app.aba {
                         Aba::Series | Aba::Animes | Aba::Doramas => "Buscar série",
                         Aba::Inicio => "Buscar filme ou série",
+                        Aba::Eventos => "Buscar evento",
                         _ => "Buscar filme",
                     };
                     if campo_de_busca(ui, &mut app.busca_vod, dica, "busca-acervo").changed() {
@@ -1542,6 +1544,10 @@ fn acervo(app: &mut App, ui_pai: &mut egui::Ui) {
 
             if let Some(serie) = app.serie_aberta.clone() {
                 episodios(app, ui, &serie);
+                return;
+            }
+            if app.aba == Aba::Eventos {
+                grade_eventos(app, ui);
                 return;
             }
             if app.carregando_vod {
@@ -2030,6 +2036,75 @@ fn cartao(
         "Enter assiste · I mostra a ficha · S favorita"
     };
     resposta.on_hover_text(dica)
+}
+
+fn grade_eventos(app: &mut App, ui: &mut egui::Ui) {
+    if !app.eventos_carregados {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(egui::RichText::new("Buscando eventos…").color(SECUNDARIO));
+        });
+        return;
+    }
+    if app.eventos.is_empty() {
+        ui.label(egui::RichText::new("Nenhum evento encontrado.").color(SECUNDARIO));
+        return;
+    }
+
+    let foco = app.foco_vod;
+    let colunas = (ui.available_width() / 320.0).max(1.0) as usize;
+    app.colunas_vod = colunas;
+
+    let mut abrir_evento = None;
+
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Grid::new("grade_eventos").num_columns(colunas).spacing(egui::vec2(16.0, 16.0)).show(ui, |ui| {
+            for (posicao, evento) in app.eventos.iter().enumerate() {
+                let largura = (ui.available_width() - ((colunas - 1) as f32 * 16.0)) / colunas as f32;
+                let altura = 80.0;
+                let (rect, resposta) = ui.allocate_exact_size(egui::vec2(largura, altura), egui::Sense::click());
+
+                let fundo = if posicao == foco {
+                    AZUL.gamma_multiply(0.35)
+                } else if resposta.hovered() {
+                    Color32::from_white_alpha(20)
+                } else {
+                    Color32::from_white_alpha(8)
+                };
+
+                ui.painter().rect_filled(rect, 8.0, fundo);
+                let centro_y = rect.center().y;
+
+                ui.painter().text(
+                    egui::Pos2::new(rect.left() + 10.0, centro_y - 12.0),
+                    egui::Align2::LEFT_CENTER,
+                    &evento.title,
+                    forte(14.0),
+                    TEXTO,
+                );
+
+                ui.painter().text(
+                    egui::Pos2::new(rect.left() + 10.0, centro_y + 12.0),
+                    egui::Align2::LEFT_CENTER,
+                    &evento.league.name,
+                    normal(12.0),
+                    SECUNDARIO,
+                );
+
+                if resposta.clicked() || (posicao == foco && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    abrir_evento = Some(evento.clone());
+                }
+
+                if (posicao + 1) % colunas == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+
+    if let Some(evento) = abrir_evento {
+        app.tocar_vod(evento.title.clone(), evento.players.clone(), 0, true);
+    }
 }
 
 fn episodios(app: &mut App, ui: &mut egui::Ui, serie: &vod::Serie) {
