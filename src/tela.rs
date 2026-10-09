@@ -2076,7 +2076,7 @@ fn grade_eventos(app: &mut App, ui: &mut egui::Ui) {
                 let centro_y = rect.center().y;
 
                 ui.painter().text(
-                    egui::Pos2::new(rect.left() + 10.0, centro_y - 12.0),
+                    egui::Pos2::new(rect.left() + 10.0, centro_y - 20.0),
                     egui::Align2::LEFT_CENTER,
                     &evento.title,
                     forte(14.0),
@@ -2084,7 +2084,15 @@ fn grade_eventos(app: &mut App, ui: &mut egui::Ui) {
                 );
 
                 ui.painter().text(
-                    egui::Pos2::new(rect.left() + 10.0, centro_y + 12.0),
+                    egui::Pos2::new(rect.left() + 10.0, centro_y),
+                    egui::Align2::LEFT_CENTER,
+                    &evento.horario(),
+                    forte(12.0),
+                    Color32::from_rgb(0, 255, 0),
+                );
+
+                ui.painter().text(
+                    egui::Pos2::new(rect.left() + 10.0, centro_y + 20.0),
                     egui::Align2::LEFT_CENTER,
                     &evento.league.name,
                     normal(12.0),
