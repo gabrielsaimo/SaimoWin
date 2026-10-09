@@ -224,6 +224,7 @@ struct App {
     ultima_checagem: Instant,
     aviso: Option<(String, Instant)>,
     aba: Aba,
+    pip: bool,
     guia_aberto: bool,
     /// A lista publicada como ela chegou, sem nada peneirado: é dela que a
     /// lista visível é remontada quando um servidor é religado.
@@ -384,6 +385,7 @@ impl App {
             ultima_checagem: Instant::now(),
             aviso: None,
             aba: Aba::Canais,
+            pip: false,
             guia_aberto: false,
             publicados: canais.clone(),
             gavetas: Vec::new(),
@@ -1383,6 +1385,18 @@ impl App {
                 egui::Key::Minus => self.mudar_volume(-5),
                 egui::Key::PageUp => self.pular_canal(-1),
                 egui::Key::PageDown => self.pular_canal(1),
+                egui::Key::P => {
+                    self.pip = !self.pip;
+                    let nivel = if self.pip { egui::viewport::WindowLevel::AlwaysOnTop } else { egui::viewport::WindowLevel::Normal };
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(nivel));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!self.pip));
+                    if self.pip {
+                        self.lista_aberta = false;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([400.0, 225.0].into()));
+                    } else {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([1280.0, 720.0].into()));
+                    }
+                }
                 egui::Key::Tab => {
                     let proxima = match self.aba {
                         Aba::Canais => Aba::Inicio,
@@ -2018,6 +2032,14 @@ impl eframe::App for App {
 
         foto_de_teste(self, ctx);
         tela::desenhar(self, ui);
+
+        if self.pip {
+            if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.pointer.primary_down()) {
+                if !ctx.egui_wants_pointer_input() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+            }
+        }
 
         // Capa e logo pedidos durante o desenho só chegam no quadro seguinte:
         // sem este pedido de redesenho, a lista ficaria parada até alguém mexer.
