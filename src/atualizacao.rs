@@ -10,7 +10,7 @@ const REPO: &str = "gabrielsaimo/SaimoPlayer";
 /// O que procurar no release. Era um ZIP com os arquivos soltos até a 1.7.5,
 /// e passou a ser o instalador: quem baixava o ZIP e clicava no executável de
 /// dentro do compactador ficava sem vídeo, porque a DLL não ia junto.
-pub const ARQUIVO: &str = "SaimoTV-Instalador.msi";
+pub const ARQUIVO: &str = "SaimoTV-Windows.zip";
 
 #[derive(Clone, Debug)]
 pub struct Versao {
@@ -125,7 +125,7 @@ mod testes_links {
     use super::link_oficial;
     #[test]
     fn restringe_downloads_ao_repositorio_oficial() {
-        assert!(link_oficial("https://github.com/gabrielsaimo/SaimoPlayer/releases/download/v1.7.7/SaimoTV-Instalador.msi"));
+        assert!(link_oficial("https://github.com/gabrielsaimo/SaimoPlayer/releases/download/v1.7.7/SaimoTV-Windows.zip"));
         for url in ["file:///C:/bad.exe", "https://github.com.evil.test/gabrielsaimo/SaimoPlayer/releases/",
                     "https://github.com/gabrielsaimo/SaimoPlayer/releases/\ncalc.exe",
                     "https://github.com/other/repo/releases/latest"] {
